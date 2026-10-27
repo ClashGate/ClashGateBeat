@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ClashGate 一键安装入口
 #
- bash$| bash
+#   curl -fsSL https://raw.githubusercontent.com/ClashGate/ClashGateBeat/main/install.sh | bash
 #
 # 通过 curl|bash 运行时只有本文件：先从公开仓库下载完整文件（直连 GitHub，不使用任何代理），
 # 再交给 scripts/cmd/clashgate.sh 执行安装（按提示选择模式、填写域名）。
