@@ -24,7 +24,7 @@
 支持 `systemd` 主流 Linux 发行版（Ubuntu / Debian / Rocky / Alma / Fedora / CentOS，需 `root` 权限）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ClashGate/ClashGateBeat/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ClashGate/ClashGate/main/install.sh | bash
 ```
 
 ## ⌨️ 常用命令
