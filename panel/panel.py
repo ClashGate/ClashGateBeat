@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ClashGate v0.92 - rebuilt admin console for ClashGate (Vue 3 + Tailwind CSS, light green SaaS theme).
+"""ClashGate v0.93 - rebuilt admin console for ClashGate (Vue 3 + Tailwind CSS, light green SaaS theme).
 
 Stdlib only (Python 3). Serves HTTPS itself with the same certificate
 Mihomo uses (/etc/clashgate/certs); no reverse proxy.
@@ -35,7 +35,7 @@ import uuid as uuidlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, quote
 
-VERSION = "0.92"
+VERSION = "0.93"
 
 # CLASHGATE_ROOT lets the panel run against a fake tree for local testing.
 ROOT = os.environ.get("CLASHGATE_ROOT", "")
@@ -2432,7 +2432,7 @@ def _http_get_text(url: str, timeout: int = 15, headers: dict = None) -> str:
 
 
 def _resolve_repo_slug(env: dict = None) -> str:
-    """Resolve REPO_SLUG from env / scripts/lib/common.sh / defaults (ClashGate/ClashGateBeat)."""
+    """Resolve REPO_SLUG from env / scripts/lib/common.sh / defaults (ClashGate/ClashGate)."""
     if env is None:
         env = read_env()
     common_vars = {}
