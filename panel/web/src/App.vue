@@ -1249,52 +1249,128 @@ async function reloadPanelAfterUpgrade(previousVersion) {
 }
 
 
-const routingForm = reactive({
-  name: '',
-  yaml_raw: '',
-  url: '',
-})
+const createRoutingForm = reactive({ name: '', rules_raw: '' })
+const importRoutingForm = reactive({ name: '', url: '' })
 
 const routingGroups = computed(() => {
   const g = state.routing && Array.isArray(state.routing.groups) ? state.routing.groups : []
   return g
 })
 
+const CLASSICAL_RULE_TYPES = new Set([
+  'DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-REGEX',
+  'GEOSITE', 'GEOIP', 'IP-CIDR', 'IP-CIDR6', 'IP-ASN',
+  'SRC-IP-CIDR', 'SRC-PORT', 'DST-PORT', 'PROCESS-NAME', 'PROCESS-PATH',
+  'NETWORK', 'UID', 'IN-NAME', 'IN-TYPE',
+])
+
+function routingNameTaken(name, exceptId = '') {
+  const n = String(name || '').trim()
+  return routingGroups.value.some((g) => g && g.name === n && g.id !== exceptId)
+}
+
+function validateClassicalRulesPaste(rulesRaw) {
+  const lines = String(rulesRaw || '').split(/\n/)
+  const kept = []
+  for (const rawLine of lines) {
+    let line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    if (line.startsWith('- ')) line = line.slice(2).trim()
+    else if (line.startsWith('-')) line = line.slice(1).trim()
+    if (!line) continue
+    const upper = line.toUpperCase()
+    if (upper.startsWith('RULE-SET,')) {
+      return { ok: false, msg: t('新建分流组请粘贴 DOMAIN / IP 等经典规则；外部分流规则集请用「引入外部分流」') }
+    }
+    if (upper.startsWith('MATCH,')) {
+      return { ok: false, msg: t('MATCH 由系统自动生成，请勿粘贴') }
+    }
+    const parts = line.split(',').map((p) => p.trim()).filter((p, i, arr) => p || i < arr.length - 1)
+    if (parts.length < 2) {
+      return { ok: false, msg: t('规则格式无效：{line}（示例：- DOMAIN-SUFFIX,example.com）', { line: rawLine.trim() }) }
+    }
+    const rtype = parts[0].toUpperCase()
+    if (!CLASSICAL_RULE_TYPES.has(rtype)) {
+      return {
+        ok: false,
+        msg: t('不支持的规则类型「{type}」。请使用 DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR 等经典规则', { type: parts[0] }),
+      }
+    }
+    kept.push(line)
+  }
+  if (!kept.length) {
+    return { ok: false, msg: t('请至少粘贴一条分流规则（如 - DOMAIN-SUFFIX,example.com）') }
+  }
+  return { ok: true, lines: kept }
+}
+
+function validateHttpUrl(url) {
+  const u = String(url || '').trim()
+  if (!u) return { ok: false, msg: t('请填写外部规则集 URL') }
+  if (!/^https?:\/\//i.test(u)) return { ok: false, msg: t('外部规则集 URL 必须以 http(s):// 开头') }
+  try {
+    const parsed = new URL(u)
+    if (!parsed.hostname) return { ok: false, msg: t('外部规则集 URL 无效') }
+  } catch {
+    return { ok: false, msg: t('外部规则集 URL 无效') }
+  }
+  return { ok: true }
+}
+
 async function createRoutingGroup() {
-  const name = routingForm.name.trim()
+  const name = createRoutingForm.name.trim()
   if (!name) {
     showToast(t('请填写分流组名称'), false)
     return
   }
-  const res = await postAction('/routing/add', { name }, 'routing-add')
+  if (routingNameTaken(name)) {
+    showToast(t('分流组名称已存在：{name}', { name }), false)
+    return
+  }
+  const check = validateClassicalRulesPaste(createRoutingForm.rules_raw)
+  if (!check.ok) {
+    showToast(check.msg, false)
+    return
+  }
+  const res = await postAction(
+    '/routing/add',
+    { name, rules_raw: createRoutingForm.rules_raw },
+    'routing-add',
+  )
   if (res && res.ok) {
-    routingForm.name = ''
-    routingForm.yaml_raw = ''
-    routingForm.url = ''
+    createRoutingForm.name = ''
+    createRoutingForm.rules_raw = ''
   }
 }
 
 async function importRoutingGroup() {
-  const name = routingForm.name.trim()
-  const url = routingForm.url.trim()
+  const name = importRoutingForm.name.trim()
+  const url = importRoutingForm.url.trim()
   if (!name) {
     showToast(t('请填写分流组名称'), false)
     return
   }
-  if (!url) {
-    showToast(t('请填写外部规则集 URL'), false)
+  if (routingNameTaken(name)) {
+    showToast(t('分流组名称已存在：{name}', { name }), false)
+    return
+  }
+  const urlCheck = validateHttpUrl(url)
+  if (!urlCheck.ok) {
+    showToast(urlCheck.msg, false)
     return
   }
   const res = await postAction('/routing/import', { name, url }, 'routing-import')
   if (res && res.ok) {
-    routingForm.name = ''
-    routingForm.yaml_raw = ''
-    routingForm.url = ''
+    importRoutingForm.name = ''
+    importRoutingForm.url = ''
   }
 }
 
 function confirmDeleteRouting(g) {
-  if (!g || !g.deletable) return
+  if (!g || !g.deletable) {
+    showToast(t('该分流组不可删除'), false)
+    return
+  }
   openConfirmDialog({ tone: 'rose', confirmText: t('删除'),
     title: t('分流组'),
     message: t('确定删除分流组「{name}」？', { name: g.name }),
@@ -1315,27 +1391,80 @@ const renameDialog = reactive({ show: false, id: '', oldName: '', name: '' })
 function closeRenameDialog() { renameDialog.show = false }
 async function acceptRenameDialog() {
   const trimmed = String(renameDialog.name || '').trim()
-  if (!trimmed) return
+  if (!trimmed) {
+    showToast(t('请填写分流组名称'), false)
+    return
+  }
+  if (routingNameTaken(trimmed, renameDialog.id)) {
+    showToast(t('分流组名称已存在：{name}', { name: trimmed }), false)
+    return
+  }
   const id = renameDialog.id
   renameDialog.show = false
   if (trimmed === renameDialog.oldName) return
   await postAction('/routing/rename', { id, name: trimmed }, `routing-rename-${id}`)
 }
 
-const routingProvOpen = ref('')
+const routingPanelOpen = ref('')
+const routingRuleDraft = reactive({})
 const routingProvForm = reactive({ provider: '', url: '' })
 
-function toggleRoutingProviders(g) {
-  routingProvOpen.value = routingProvOpen.value === g.id ? '' : g.id
+function isLocalRoutingGroup(g) {
+  return g && (g.kind === 'local' || (!g.kind && !(g.rule_providers || []).length))
+}
+
+function toggleRoutingPanel(g) {
+  if (!g) return
+  if (routingPanelOpen.value === g.id) {
+    routingPanelOpen.value = ''
+    return
+  }
+  routingPanelOpen.value = g.id
+  if (isLocalRoutingGroup(g)) {
+    const lines = Array.isArray(g.classical_rules) ? g.classical_rules : []
+    routingRuleDraft[g.id] = lines.map((r) => `- ${r}`).join('\n')
+  } else {
+    routingProvForm.provider = ''
+    routingProvForm.url = ''
+  }
+}
+
+async function saveLocalRoutingRules(g) {
+  if (!g) return
+  const raw = routingRuleDraft[g.id] || ''
+  const check = validateClassicalRulesPaste(raw)
+  if (!check.ok) {
+    showToast(check.msg, false)
+    return
+  }
+  await postAction('/routing/rules', { id: g.id, rules_raw: raw }, `routing-rules-${g.id}`)
 }
 
 async function addRoutingProvider(g) {
-  if (!routingProvForm.provider.trim() || !routingProvForm.url.trim()) return
-  const res = await postAction('/routing/provider/add', { id: g.id, ...routingProvForm }, 'routing-prov-add')
+  const provider = routingProvForm.provider.trim()
+  const url = routingProvForm.url.trim()
+  if (!provider) {
+    showToast(t('请填写规则集名称（英文）'), false)
+    return
+  }
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(provider)) {
+    showToast(t('规则集名称只能用英文字母、数字、- _ .'), false)
+    return
+  }
+  const urlCheck = validateHttpUrl(url)
+  if (!urlCheck.ok) {
+    showToast(urlCheck.msg, false)
+    return
+  }
+  const res = await postAction('/routing/provider/add', { id: g.id, provider, url }, 'routing-prov-add')
   if (res && res.ok) { routingProvForm.provider = ''; routingProvForm.url = '' }
 }
 
 function deleteRoutingProvider(g, p) {
+  if (!g || !p) {
+    showToast(t('规则集不存在'), false)
+    return
+  }
   openConfirmDialog({ tone: 'rose', confirmText: t('删除'),
     title: t('规则集'),
     message: t('确定删除规则集「{name}」？', { name: p.name }),
@@ -2731,7 +2860,7 @@ onUnmounted(() => {
             <div class="flex items-start justify-between gap-3 flex-wrap">
               <div>
                 <h2 class="text-base font-bold text-slate-900 tracking-tight">{{ t('服务端分流') }}</h2>
-                <p class="text-xs text-slate-500 mt-1">{{ t('分流规则写在独立 YAML，通过主配置引入。重载后生效。') }}</p>
+                <p class="text-xs text-slate-500 mt-1">{{ t('分流写在独立文件，通过主配置引入。改完点顶部「重载配置」生效。') }}</p>
               </div>
               <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-sky-50 text-sky-700 border border-sky-200/60 tabular-nums">
                 {{ routingGroups.length }}
@@ -2763,27 +2892,72 @@ onUnmounted(() => {
                   <span class="text-slate-400 text-lg leading-none" aria-hidden="true">⋮⋮</span>
                   <span class="text-xs text-slate-400 tabular-nums w-5">{{ idx + 1 }}</span>
                   <div class="min-w-0 flex-1">
-                    <div class="font-semibold text-slate-900 truncate">{{ g.name }}</div>
+                    <div class="flex items-center gap-2 min-w-0">
+                      <div class="font-semibold text-slate-900 truncate">{{ g.name }}</div>
+                      <span
+                        class="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold border"
+                        :class="isLocalRoutingGroup(g) ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-violet-50 text-violet-700 border-violet-200'"
+                      >{{ isLocalRoutingGroup(g) ? t('本地规则') : t('外部分流') }}</span>
+                    </div>
+                    <div class="text-[11px] text-slate-500 mt-0.5">
+                      <template v-if="isLocalRoutingGroup(g)">{{ t('{n} 条规则', { n: (g.classical_rules || []).length }) }}</template>
+                      <template v-else>{{ t('{n} 个规则集', { n: (g.rule_providers || []).length }) }}</template>
+                    </div>
                     <div v-if="g.error" class="text-xs text-rose-600 mt-1">{{ g.error }}</div>
                   </div>
                   <div class="flex items-center gap-1.5 flex-wrap">
-                    <button v-if="!state.custom_config_mode" type="button" class="px-2 py-1 rounded-lg text-xs bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200" @click="toggleRoutingProviders(g)">{{ t('规则集') }} ({{ (g.rule_providers || []).length }})</button>
-                    <button type="button" class="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200 text-slate-700" @click="renameRouting(g)">{{ t('重命名') }}</button>
+                    <button
+                      v-if="!state.custom_config_mode"
+                      type="button"
+                      class="px-2 py-1 rounded-lg text-xs bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200"
+                      @click.stop="toggleRoutingPanel(g)"
+                    >{{ isLocalRoutingGroup(g) ? t('编辑规则') : t('规则集') }}</button>
+                    <button type="button" class="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200 text-slate-700" @click.stop="renameRouting(g)">{{ t('重命名') }}</button>
                     <button
                       v-if="g.deletable"
                       type="button"
                       class="px-2 py-1 rounded-lg text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
-                      @click="confirmDeleteRouting(g)"
+                      @click.stop="confirmDeleteRouting(g)"
                     >{{ t('删除') }}</button>
                   </div>
                 </div>
-                <div v-if="routingProvOpen === g.id" class="mt-3 space-y-2 border-t border-slate-100 pt-3" draggable="true" @dragstart.stop.prevent>
+
+                <div
+                  v-if="routingPanelOpen === g.id && isLocalRoutingGroup(g)"
+                  class="mt-3 space-y-2 border-t border-slate-100 pt-3"
+                  draggable="true"
+                  @dragstart.stop.prevent
+                >
+                  <p class="text-xs text-slate-500">{{ t('每行一条经典规则，例如 - DOMAIN-SUFFIX,example.com。保存后写入本地规则文件，由主配置引入。') }}</p>
+                  <textarea
+                    v-model="routingRuleDraft[g.id]"
+                    rows="6"
+                    class="cg-input w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-mono"
+                    :placeholder="'- DOMAIN-SUFFIX,example.com\n- DOMAIN-KEYWORD,openai'"
+                  ></textarea>
+                  <div class="flex justify-end">
+                    <button
+                      type="button"
+                      class="cg-btn-primary h-9 px-3 rounded-xl text-xs font-semibold"
+                      :disabled="busyKey === `routing-rules-${g.id}`"
+                      @click="saveLocalRoutingRules(g)"
+                    >{{ busyKey === `routing-rules-${g.id}` ? t('保存中…') : t('保存规则') }}</button>
+                  </div>
+                </div>
+
+                <div
+                  v-else-if="routingPanelOpen === g.id"
+                  class="mt-3 space-y-2 border-t border-slate-100 pt-3"
+                  draggable="true"
+                  @dragstart.stop.prevent
+                >
                   <div v-if="!(g.rule_providers || []).length" class="text-xs text-slate-500">{{ t('暂无规则集') }}</div>
                   <div v-for="p in (g.rule_providers || [])" :key="p.name" class="flex items-center gap-2 text-xs">
                     <span class="font-semibold text-slate-800">{{ p.name }}</span>
                     <span class="text-slate-500 truncate flex-1 min-w-0">{{ p.url }}</span>
                     <button type="button" class="px-2 py-0.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200" @click="deleteRoutingProvider(g, p)">{{ t('删除') }}</button>
                   </div>
+                  <p class="text-xs text-slate-500">{{ t('可再为此组分追加一个规则集（名称 + URL）。新建整组请用下方「引入外部分流」。') }}</p>
                   <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
                     <input v-model="routingProvForm.provider" :placeholder="t('规则集名称（英文）')" class="cg-input h-9 px-3 rounded-xl border border-slate-200 text-xs" />
                     <input v-model="routingProvForm.url" placeholder="https://" class="cg-input sm:col-span-2 h-9 px-3 rounded-xl border border-slate-200 text-xs font-mono" />
@@ -2794,21 +2968,55 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <section class="cg-surface rounded-2xl p-5 sm:p-6 space-y-3" v-if="!(state.routing && state.routing.error && state.custom_config_mode)">
-            <h3 class="text-sm font-bold text-slate-900">{{ t('新建分流组') }} / {{ t('引入外部规则') }}</h3>
-            <p class="text-xs text-slate-500">{{ t('引入外部规则会新建一个分流组，并把该 URL 作为规则集挂上（不下载、不解析远程 YAML）。') }}</p>
+          <section
+            class="cg-surface rounded-2xl p-5 sm:p-6 space-y-3"
+            v-if="!(state.routing && state.routing.error && state.custom_config_mode)"
+          >
+            <h3 class="text-sm font-bold text-slate-900">{{ t('新建分流组') }}</h3>
+            <p class="text-xs text-slate-500">{{ t('粘贴 DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR 等经典规则，保存为本地规则文件并由主配置引入。') }}</p>
             <label class="block text-xs font-medium text-slate-500">{{ t('分流组名称') }}
-              <input v-model="routingForm.name" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
+              <input v-model="createRoutingForm.name" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
             </label>
-            <label class="block text-xs font-medium text-slate-500">{{ t('外部规则集 URL（引入时填写）') }}
-              <input v-model="routingForm.url" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono" placeholder="https://" />
+            <label class="block text-xs font-medium text-slate-500">{{ t('规则（每行一条）') }}
+              <textarea
+                v-model="createRoutingForm.rules_raw"
+                rows="5"
+                class="cg-input mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-mono"
+                :placeholder="'- DOMAIN-SUFFIX,example.com\n- DOMAIN-KEYWORD,openai\n- IP-CIDR,1.1.1.1/32'"
+              ></textarea>
             </label>
             <div class="flex items-center gap-2 flex-wrap">
-              <button type="button" class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-add' || !routingForm.name.trim()" @click="createRoutingGroup">
+              <button
+                type="button"
+                class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold"
+                :disabled="busyKey === 'routing-add'"
+                @click="createRoutingGroup"
+              >
                 {{ busyKey === 'routing-add' ? t('创建中…') : t('新建分流组') }}
               </button>
-              <button type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800" :disabled="busyKey === 'routing-import' || !routingForm.name.trim() || !routingForm.url.trim()" @click="importRoutingGroup">
-                {{ busyKey === 'routing-import' ? t('引入中…') : t('引入外部规则') }}
+            </div>
+          </section>
+
+          <section
+            class="cg-surface rounded-2xl p-5 sm:p-6 space-y-3"
+            v-if="!(state.routing && state.routing.error && state.custom_config_mode)"
+          >
+            <h3 class="text-sm font-bold text-slate-900">{{ t('引入外部分流') }}</h3>
+            <p class="text-xs text-slate-500">{{ t('只填名称和规则集 URL。会写入 rule-providers、proxy-groups，并在 rules 里加 RULE-SET（不下载远程内容）。') }}</p>
+            <label class="block text-xs font-medium text-slate-500">{{ t('分流组名称') }}
+              <input v-model="importRoutingForm.name" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
+            </label>
+            <label class="block text-xs font-medium text-slate-500">{{ t('规则集 URL') }}
+              <input v-model="importRoutingForm.url" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono" placeholder="https://" />
+            </label>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold"
+                :disabled="busyKey === 'routing-import'"
+                @click="importRoutingGroup"
+              >
+                {{ busyKey === 'routing-import' ? t('引入中…') : t('引入外部分流') }}
               </button>
             </div>
           </section>

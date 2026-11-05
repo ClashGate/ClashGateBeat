@@ -32,6 +32,76 @@ _SAFE_ID = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,47}$")
 _SAFE_NAME = re.compile(r"^[\w\u4e00-\u9fff .+\-🎯🚀🐟🤖📱🇨🇳⭐️⛅️]{1,64}$", re.UNICODE)
 
 
+
+_CLASSICAL_TYPES = {
+    "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX",
+    "GEOSITE", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN",
+    "SRC-IP-CIDR", "SRC-PORT", "DST-PORT", "PROCESS-NAME", "PROCESS-PATH",
+    "NETWORK", "UID", "IN-NAME", "IN-TYPE",
+}
+
+
+def parse_classical_rules_raw(rules_raw: str, group_name: str) -> list:
+    """Parse beginner-pasted classical rule lines into Clash rule strings.
+
+    Accepts lines like:
+      - DOMAIN-SUFFIX,example.com
+      DOMAIN-SUFFIX,example.com,SomeGroup
+      DOMAIN-KEYWORD,foo
+    Empty / comment lines are skipped. Missing proxy target gets group_name.
+    RULE-SET / MATCH are rejected here (use import / system groups).
+    """
+    out = []
+    for raw_line in (rules_raw or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        elif line.startswith("-"):
+            line = line[1:].strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith("RULE-SET,"):
+            raise ValueError("新建分流组请粘贴 DOMAIN / IP 等经典规则；外部分流规则集请用「引入外部分流」")
+        if upper.startswith("MATCH,"):
+            raise ValueError("MATCH 由系统自动生成，请勿粘贴")
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            raise ValueError(f"规则格式无效：{raw_line.strip()}（示例：- DOMAIN-SUFFIX,example.com）")
+        rtype = parts[0].upper()
+        if rtype not in _CLASSICAL_TYPES:
+            raise ValueError(
+                f"不支持的规则类型「{parts[0]}」。请使用 DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR 等经典规则"
+            )
+        # Already has no-resolve + target
+        if parts[-1] == "no-resolve" and len(parts) >= 3:
+            target = parts[-2].strip('"')
+            if target != group_name:
+                parts[-2] = group_name
+            out.append(",".join(parts))
+            continue
+        # Has a proxy-looking last field (not a pure matcher value for GEOIP etc.)
+        # Classical forms: TYPE,value[,target][,no-resolve]
+        if len(parts) >= 3 and parts[-1] != "no-resolve":
+            # treat last as target
+            parts[-1] = group_name
+            out.append(",".join(parts))
+            continue
+        if len(parts) == 2:
+            out.append(f"{parts[0]},{parts[1]},{group_name}")
+            continue
+        # TYPE,value,no-resolve
+        if len(parts) == 3 and parts[-1] == "no-resolve":
+            out.append(f"{parts[0]},{parts[1]},{group_name},no-resolve")
+            continue
+        out.append(",".join(parts[:-1] + [group_name]) if len(parts) > 2 else f"{line},{group_name}")
+    if not out:
+        raise ValueError("请至少粘贴一条分流规则（如 - DOMAIN-SUFFIX,example.com）")
+    return out
+
+
 def _slugify(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "-", (name or "").strip()).strip("-").lower()
     if not s:
@@ -467,24 +537,31 @@ class RoutingManager:
                     pass
                 doc = {"rule-providers": {}, "proxy-groups": [], "rules": []}
                 err = str(e)
+            gname = g.get("name") or g["id"]
+            kind = self._infer_kind(g, doc) if not err else (g.get("kind") or "local")
+            http_providers = [
+                {
+                    "name": str(pn),
+                    "url": str((pc or {}).get("url") or ""),
+                    "behavior": str((pc or {}).get("behavior") or "classical"),
+                    "format": str((pc or {}).get("format") or "yaml"),
+                    "type": str((pc or {}).get("type") or ""),
+                }
+                for pn, pc in (doc.get("rule-providers") or {}).items()
+                if str((pc or {}).get("type") or "") == "http"
+            ]
+            classical = [] if err else self._classical_rules_for_ui(doc, gname)
             groups.append({
                 "id": g["id"],
-                "name": g.get("name") or g["id"],
+                "name": gname,
                 "file": g["file"],
                 "deletable": bool(g.get("deletable", True)),
                 "role": g.get("role") or ROLE_POLICY,
-                "rule_providers_count": len(doc.get("rule-providers") or {}),
-                "rule_providers": [
-                    {
-                        "name": str(pn),
-                        "url": str((pc or {}).get("url") or ""),
-                        "behavior": str((pc or {}).get("behavior") or ""),
-                        "format": str((pc or {}).get("format") or "yaml"),
-                        "type": str((pc or {}).get("type") or ""),
-                    }
-                    for pn, pc in (doc.get("rule-providers") or {}).items()
-                ],
-                "rules_count": len(doc.get("rules") or []),
+                "kind": kind,
+                "rule_providers_count": len(http_providers),
+                "rule_providers": http_providers,
+                "classical_rules": classical,
+                "rules_count": len(classical) if kind == "local" else len(doc.get("rules") or []),
                 "error": err,
             })
         return {
@@ -610,7 +687,7 @@ class RoutingManager:
                 return cand
         return stem + "-" + secrets.token_hex(3) + ".yaml"
 
-    def _insert_policy_group(self, meta: dict, name: str, doc: dict) -> dict:
+    def _insert_policy_group(self, meta: dict, name: str, doc: dict, kind: str = "local") -> dict:
         gid = self._unique_id(meta, name)
         filename = self._unique_file(meta, name)
         self.write_group_raw(filename, self.dump_group_doc(doc))
@@ -622,6 +699,7 @@ class RoutingManager:
             "file": filename,
             "deletable": True,
             "role": ROLE_POLICY,
+            "kind": kind if kind in ("local", "external") else "local",
         }
         groups.insert(final_idx, entry)
         meta["groups"] = groups
@@ -648,13 +726,22 @@ class RoutingManager:
                 return cand
         return base + "-" + secrets.token_hex(3)
 
-    def add_group(self, name: str, yaml_raw: str = "", import_url: str = "") -> dict:
+    def add_group(self, name: str, yaml_raw: str = "", import_url: str = "", rules_raw: str = "") -> dict:
+        """Create a local routing group from pasted classical rules (beginner path).
+
+        Prefer rules_raw (DOMAIN-SUFFIX / IP-CIDR / …). Full yaml_raw is still
+        accepted for advanced/compat callers but the panel no longer exposes it.
+        import_url is ignored — use import_group().
+        """
+        del import_url
         meta = self.load_meta()
         name = self._validate_name(name)
         if any(g.get("name") == name for g in meta["groups"]):
             raise ValueError(f"分流组名称已存在：{name}")
-        # import_url kept for API compat but ignored here; use import_group()
-        if not (yaml_raw or "").strip():
+        rules_raw = (rules_raw or "").strip()
+        yaml_raw = (yaml_raw or "").strip()
+        if rules_raw:
+            classical = parse_classical_rules_raw(rules_raw, name)
             doc = {
                 "rule-providers": {},
                 "proxy-groups": [{
@@ -663,21 +750,23 @@ class RoutingManager:
                     "include-all": True,
                     "proxies": ["Node Select", "DIRECT"],
                 }],
-                "rules": [],
+                "rules": classical,
             }
+            return self._insert_policy_group(meta, name, doc, kind="local")
+        if not yaml_raw:
+            raise ValueError("请粘贴至少一条分流规则（如 - DOMAIN-SUFFIX,example.com）")
+        doc = self.parse_group_doc(yaml_raw)
+        if doc["proxy-groups"]:
+            doc["proxy-groups"][0]["name"] = name
         else:
-            doc = self.parse_group_doc(yaml_raw)
-            if doc["proxy-groups"]:
-                doc["proxy-groups"][0]["name"] = name
-            else:
-                doc["proxy-groups"] = [{
-                    "name": name,
-                    "type": "select",
-                    "include-all": True,
-                    "proxies": ["Node Select", "DIRECT"],
-                }]
-            doc["rules"] = [r for r in doc["rules"] if not str(r).upper().startswith("MATCH,")]
-        return self._insert_policy_group(meta, name, doc)
+            doc["proxy-groups"] = [{
+                "name": name,
+                "type": "select",
+                "include-all": True,
+                "proxies": ["Node Select", "DIRECT"],
+            }]
+        doc["rules"] = [r for r in doc["rules"] if not str(r).upper().startswith("MATCH,")]
+        return self._insert_policy_group(meta, name, doc, kind="local")
 
     def import_group(self, name: str, url: str = "", yaml_raw: str = "") -> dict:
         """Beginner import: wrap an external rule-provider URL as a new routing group.
@@ -714,7 +803,7 @@ class RoutingManager:
             }],
             "rules": [f"RULE-SET,{pname},{name}"],
         }
-        return self._insert_policy_group(meta, name, doc)
+        return self._insert_policy_group(meta, name, doc, kind="external")
 
     def delete_group(self, gid: str) -> str:
         meta = self.load_meta()
@@ -852,6 +941,55 @@ class RoutingManager:
         meta["groups"] = new_groups
         self.save_meta(meta)
         self.regenerate_frags(meta)
+
+    def _infer_kind(self, g: dict, doc: dict) -> str:
+        explicit = (g.get("kind") or "").strip()
+        if explicit in ("local", "external"):
+            return explicit
+        providers = doc.get("rule-providers") or {}
+        if any(str((pc or {}).get("type") or "") == "http" for pc in providers.values()):
+            return "external"
+        return "local"
+
+    def _classical_rules_for_ui(self, doc: dict, gname: str) -> list:
+        """Classical rules targeting this group, shown without the proxy target for editing."""
+        out = []
+        for rule in doc.get("rules") or []:
+            rs = str(rule).strip()
+            if not rs:
+                continue
+            upper = rs.upper()
+            if upper.startswith("RULE-SET,") or upper.startswith("MATCH,"):
+                continue
+            target = self._rule_target(rs)
+            if target == gname:
+                out.append(self._strip_rule_target(rs, gname))
+            else:
+                # Keep foreign-target rules as-is so user can still see them
+                out.append(rs)
+        return out
+
+    def update_group_rules(self, gid: str, rules_raw: str) -> str:
+        """Replace a local group's classical rules from beginner paste text."""
+        meta = self.load_meta()
+        g = self.find_group(meta, gid)
+        if not g or g.get("role") in (ROLE_SELECT, ROLE_FINAL):
+            raise ValueError("分流组不存在")
+        doc = self.parse_group_doc(self.read_group_raw(g["file"]))
+        kind = self._infer_kind(g, doc)
+        if kind != "local":
+            raise ValueError("外部分流组请用规则集管理，不能粘贴经典规则")
+        gname = g.get("name") or gid
+        classical = parse_classical_rules_raw(rules_raw, gname)
+        # Keep any RULE-SET lines that somehow exist; local groups normally have none
+        keep = [r for r in (doc.get("rules") or []) if str(r).upper().startswith("RULE-SET,")]
+        doc["rules"] = classical + keep
+        doc["rule-providers"] = {}
+        g["kind"] = "local"
+        self.write_group_raw(g["file"], self.dump_group_doc(doc))
+        self.save_meta(meta)
+        self.regenerate_frags(meta)
+        return gname
 
     def update_group_yaml(self, gid: str, yaml_raw: str) -> str:
         meta = self.load_meta()

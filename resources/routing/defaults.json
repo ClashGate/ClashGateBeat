@@ -6,35 +6,40 @@
       "name": "Node Select",
       "file": "node-select.yaml",
       "deletable": false,
-      "role": "select"
+      "role": "select",
+      "kind": "select"
     },
     {
       "id": "ai",
       "name": "AI",
       "file": "ai.yaml",
       "deletable": true,
-      "role": "policy"
+      "role": "policy",
+      "kind": "external"
     },
     {
       "id": "social-media",
       "name": "Social Media",
       "file": "social-media.yaml",
       "deletable": true,
-      "role": "policy"
+      "role": "policy",
+      "kind": "external"
     },
     {
       "id": "china",
       "name": "China",
       "file": "china.yaml",
       "deletable": true,
-      "role": "policy"
+      "role": "policy",
+      "kind": "external"
     },
     {
       "id": "final",
       "name": "Final",
       "file": "final.yaml",
       "deletable": false,
-      "role": "final"
+      "role": "final",
+      "kind": "final"
     }
   ]
 }

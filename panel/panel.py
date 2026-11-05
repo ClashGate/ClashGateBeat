@@ -4384,6 +4384,8 @@ class Panel(BaseHTTPRequestHandler):
             return self.do_routing_provider(s, form, add=False)
         if path == "/routing/update":
             return self.do_routing_update(s, form)
+        if path == "/routing/rules":
+            return self.do_routing_rules(s, form)
         if path == "/config/custom":
             return self.do_save_custom_config(s, form)
         if path == "/config/reset-template":
@@ -5003,11 +5005,16 @@ class Panel(BaseHTTPRequestHandler):
 
     def do_routing_add(self, s, form):
         name = (form.get("name") or "").strip()
+        rules_raw = form.get("rules_raw", "")
         yaml_raw = form.get("yaml_raw", "")
+        if not name:
+            return self.respond_mutation(s, "请填写分流组名称", False)
+        if not (rules_raw or "").strip() and not (yaml_raw or "").strip():
+            return self.respond_mutation(s, "请粘贴至少一条分流规则（如 - DOMAIN-SUFFIX,example.com）", False)
         with LOCK:
             try:
                 _ensure_pending_baseline()
-                entry = get_routing().add_group(name=name, yaml_raw=yaml_raw)
+                entry = get_routing().add_group(name=name, rules_raw=rules_raw, yaml_raw=yaml_raw)
                 record_pending_reload(
                     op="add-routing",
                     kind="routing",
@@ -5120,6 +5127,27 @@ class Panel(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.respond_mutation(s, f"调整分流顺序失败：{e}", False)
         return self.respond_mutation(s, "已调整分流顺序，请点顶部「重载配置」生效", True)
+
+    def do_routing_rules(self, s, form):
+        gid = (form.get("id") or "").strip()
+        rules_raw = form.get("rules_raw", "")
+        if not gid:
+            return self.respond_mutation(s, "缺少分流组 id", False)
+        with LOCK:
+            try:
+                if is_custom_config_mode():
+                    raise ValueError("自定义配置模式下请在自定义服务端里修改")
+                _ensure_pending_baseline()
+                name = get_routing().update_group_rules(gid, rules_raw)
+                record_pending_reload(
+                    op="update-routing",
+                    kind="routing",
+                    name=name,
+                    detail=f"~ 更新分流组「{name}」规则",
+                )
+            except Exception as e:
+                return self.respond_mutation(s, f"更新分流规则失败：{e}", False)
+        return self.respond_mutation(s, f"已更新分流组「{name}」规则，请点顶部「重载配置」生效", True)
 
     def do_routing_update(self, s, form):
         gid = (form.get("id") or "").strip()

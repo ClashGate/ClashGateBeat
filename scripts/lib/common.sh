@@ -133,8 +133,9 @@ load_env() { # persisted install settings; CLI flags given this run win
     esac
   done < "$ENV_FILE"
   REPO_SLUG=${REPO_SLUG:-$REPO_OWNER/$REPO_NAME}
-  REPO_TARBALL=https://github.com/$REPO_SLUG/archive/refs/heads/main.tar.gz
-  INSTALL_RAW_URL=https://raw.githubusercontent.com/$REPO_SLUG/main/install.sh
+  # Honor a pre-set REPO_TARBALL (used to pin a commit on Beat/InstaBox).
+  REPO_TARBALL=${REPO_TARBALL:-https://github.com/$REPO_SLUG/archive/refs/heads/main.tar.gz}
+  INSTALL_RAW_URL=${INSTALL_RAW_URL:-https://raw.githubusercontent.com/$REPO_SLUG/main/install.sh}
 }
 
 save_env() {
