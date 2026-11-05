@@ -1254,8 +1254,6 @@ const routingForm = reactive({
   yaml_raw: '',
   url: '',
 })
-const routingEditId = ref('')
-const routingEditYaml = ref('')
 
 const routingGroups = computed(() => {
   const g = state.routing && Array.isArray(state.routing.groups) ? state.routing.groups : []
@@ -1309,34 +1307,24 @@ async function renameRouting(g) {
   await postAction('/routing/rename', { id: g.id, name: trimmed }, `routing-rename-${g.id}`)
 }
 
-async function moveRouting(g, dir) {
+const routingDragIdx = ref(-1)
+const routingDragOver = ref(-1)
+
+function onRoutingDragStart(idx, ev) {
+  routingDragIdx.value = idx
+  try { ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', String(idx)) } catch (_) {}
+}
+
+async function onRoutingDrop(idx) {
+  const from = routingDragIdx.value
+  routingDragIdx.value = -1
+  routingDragOver.value = -1
+  if (from < 0 || from === idx) return
   const groups = routingGroups.value.slice()
-  const idx = groups.findIndex((x) => x.id === g.id)
-  if (idx < 0) return
-  const swap = idx + dir
-  if (swap < 0 || swap >= groups.length) return
-  // keep select first / final last
-  if (groups[idx].role === 'select' || groups[idx].role === 'final') return
-  if (groups[swap].role === 'select' || groups[swap].role === 'final') return
-  const order = groups.map((x) => x.id)
-  const tmp = order[idx]
-  order[idx] = order[swap]
-  order[swap] = tmp
-  await postAction('/routing/reorder', { order: JSON.stringify(order) }, `routing-reorder`)
-}
-
-function toggleRoutingEdit(g) {
-  if (routingEditId.value === g.id) {
-    routingEditId.value = ''
-    routingEditYaml.value = ''
-    return
-  }
-  routingEditId.value = g.id
-  routingEditYaml.value = g.yaml || ''
-}
-
-async function saveRoutingYaml(g) {
-  await postAction('/routing/update', { id: g.id, yaml_raw: routingEditYaml.value }, `routing-update-${g.id}`)
+  const [moved] = groups.splice(from, 1)
+  groups.splice(idx, 0, moved)
+  if (state.routing && Array.isArray(state.routing.groups)) state.routing.groups = groups
+  await postAction('/routing/reorder', { order: JSON.stringify(groups.map((g) => g.id)) }, 'routing-reorder')
 }
 
 function selectTab(tab) {
@@ -2692,51 +2680,41 @@ onUnmounted(() => {
             <p v-if="state.routing && state.routing.error" class="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
               {{ state.routing.error || t('自定义模式下分流解析失败') }}
             </p>
-            <p class="text-xs text-slate-500">{{ t('Node Select 与 Final 不可删除') }}</p>
           </section>
 
           <section class="cg-surface rounded-2xl p-5 sm:p-6 space-y-3">
             <h3 class="text-sm font-bold text-slate-900">{{ t('分流组') }}</h3>
+            <p class="text-xs text-slate-500">{{ t('拖动调整顺序（与主配置一致），点顶部「重载配置」后生效。') }}</p>
             <div v-if="routingGroups.length === 0" class="text-sm text-slate-500 py-6 text-center">{{ t('暂无分流组') }}</div>
             <div v-else class="space-y-2">
               <div
                 v-for="(g, idx) in routingGroups"
                 :key="g.id"
-                class="rounded-xl border border-slate-200 bg-white px-3.5 py-3"
+                draggable="true"
+                class="rounded-xl border bg-white px-3.5 py-3 cursor-move select-none transition"
+                :class="[routingDragOver === idx ? 'border-sky-400 ring-2 ring-sky-100' : 'border-slate-200', routingDragIdx === idx ? 'opacity-50' : '']"
+                @dragstart="onRoutingDragStart(idx, $event)"
+                @dragover.prevent="routingDragOver = idx"
+                @dragleave="routingDragOver === idx && (routingDragOver = -1)"
+                @drop.prevent="onRoutingDrop(idx)"
+                @dragend="routingDragIdx = -1; routingDragOver = -1"
               >
                 <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-slate-400 text-lg leading-none" aria-hidden="true">⋮⋮</span>
+                  <span class="text-xs text-slate-400 tabular-nums w-5">{{ idx + 1 }}</span>
                   <div class="min-w-0 flex-1">
                     <div class="font-semibold text-slate-900 truncate">{{ g.name }}</div>
-                    <div class="text-[11px] text-slate-500 font-mono">{{ g.file }} · {{ g.role }} · rules {{ g.rules_count }} · providers {{ g.rule_providers_count }}</div>
                     <div v-if="g.error" class="text-xs text-rose-600 mt-1">{{ g.error }}</div>
                   </div>
                   <div class="flex items-center gap-1.5 flex-wrap">
-                    <button type="button" class="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200 text-slate-700" :disabled="idx === 0 || g.role === 'select' || g.role === 'final'" @click="moveRouting(g, -1)">{{ t('上移') }}</button>
-                    <button type="button" class="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200 text-slate-700" :disabled="idx >= routingGroups.length - 1 || g.role === 'select' || g.role === 'final'" @click="moveRouting(g, 1)">{{ t('下移') }}</button>
                     <button type="button" class="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200 text-slate-700" @click="renameRouting(g)">{{ t('重命名') }}</button>
-                    <button type="button" class="px-2 py-1 rounded-lg text-xs bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200" @click="toggleRoutingEdit(g)">{{ routingEditId === g.id ? t('收起编辑') : t('编辑 YAML') }}</button>
                     <button
                       v-if="g.deletable"
                       type="button"
                       class="px-2 py-1 rounded-lg text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
                       @click="confirmDeleteRouting(g)"
                     >{{ t('删除') }}</button>
-                    <span v-else class="px-2 py-1 rounded-lg text-[11px] text-slate-400">{{ t('不可删除') }}</span>
                   </div>
-                </div>
-                <div v-if="routingEditId === g.id" class="mt-3 space-y-2">
-                  <textarea
-                    v-model="routingEditYaml"
-                    rows="12"
-                    class="cg-input w-full px-3 py-2 rounded-xl border border-slate-200 font-mono text-xs"
-                    spellcheck="false"
-                  ></textarea>
-                  <button
-                    type="button"
-                    class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold"
-                    :disabled="busyKey === ('routing-update-' + g.id)"
-                    @click="saveRoutingYaml(g)"
-                  >{{ busyKey === ('routing-update-' + g.id) ? t('保存中…') : t('更新分流 YAML') }}</button>
                 </div>
               </div>
             </div>
@@ -2747,17 +2725,14 @@ onUnmounted(() => {
             <label class="block text-xs font-medium text-slate-500">{{ t('分流组名称') }}
               <input v-model="routingForm.name" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
             </label>
-            <label class="block text-xs font-medium text-slate-500">{{ t('或从 URL 引入（仅在你主动提交时下载）') }}
+            <label class="block text-xs font-medium text-slate-500">{{ t('外部分流 URL（引入时填写）') }}
               <input v-model="routingForm.url" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono" placeholder="https://" />
-            </label>
-            <label class="block text-xs font-medium text-slate-500">{{ t('粘贴分流 YAML（可选）') }}
-              <textarea v-model="routingForm.yaml_raw" rows="8" class="cg-input mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 font-mono text-xs" spellcheck="false" placeholder="rule-providers:&#10;proxy-groups:&#10;rules:"></textarea>
             </label>
             <div class="flex items-center gap-2 flex-wrap">
               <button type="button" class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-add'" @click="createRoutingGroup">
                 {{ busyKey === 'routing-add' ? t('创建中…') : t('新建分流组') }}
               </button>
-              <button type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800" :disabled="busyKey === 'routing-import'" @click="importRoutingGroup">
+              <button type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800" :disabled="busyKey === 'routing-import' || !routingForm.url.trim()" @click="importRoutingGroup">
                 {{ busyKey === 'routing-import' ? t('引入中…') : t('引入外部分流') }}
               </button>
             </div>

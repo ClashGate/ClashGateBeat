@@ -256,6 +256,17 @@ def _seed_dir() -> str:
     return p2 if os.path.isdir(p2) else p1
 
 
+def _beginner_routing_state(st: dict) -> dict:
+    """Hide system groups (Node Select / Final) and raw YAML from the beginner routing UI."""
+    st = dict(st or {})
+    st["groups"] = [
+        {k: v for k, v in g.items() if k != "yaml"}
+        for g in (st.get("groups") or [])
+        if (g.get("role") or "policy") not in ("select", "final")
+    ]
+    return st
+
+
 def get_routing() -> RoutingManager:
     global _ROUTING
     if _ROUTING is None:
@@ -4148,7 +4159,7 @@ class Panel(BaseHTTPRequestHandler):
             "all_proxies_yaml": all_proxies_yaml,
             "proxies": proxy_items,
             "providers": provider_items,
-            "routing": (
+            "routing": _beginner_routing_state(
                 get_routing().public_state(cur_cfg, custom_mode=True)
                 if custom_active
                 else get_routing().public_state()

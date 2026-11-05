@@ -453,6 +453,8 @@ class RoutingManager:
         meta = self.ensure_seeded()
         groups = []
         for g in meta.get("groups") or []:
+            if (g.get("role") or ROLE_POLICY) in (ROLE_SELECT, ROLE_FINAL):
+                continue  # system groups are hidden from the beginner UI
             try:
                 raw = self.read_group_raw(g["file"])
                 doc = self.parse_group_doc(raw)
@@ -471,7 +473,6 @@ class RoutingManager:
                 "file": g["file"],
                 "deletable": bool(g.get("deletable", True)),
                 "role": g.get("role") or ROLE_POLICY,
-                "yaml": raw,
                 "rule_providers_count": len(doc.get("rule-providers") or {}),
                 "rules_count": len(doc.get("rules") or []),
                 "error": err,
@@ -728,7 +729,9 @@ class RoutingManager:
     def reorder_groups(self, order: list) -> None:
         meta = self.load_meta()
         by_id = {g["id"]: g for g in meta["groups"]}
-        if set(order) != set(by_id):
+        policy_ids = {gid for gid, g in by_id.items() if g.get("role") not in (ROLE_SELECT, ROLE_FINAL)}
+        order = [gid for gid in order if gid in by_id]
+        if len(order) != len(set(order)) or not (set(order) == policy_ids or set(order) == set(by_id)):
             raise ValueError("分流顺序必须包含全部现有分流组")
         select = [g for g in meta["groups"] if g.get("role") == ROLE_SELECT]
         final = [g for g in meta["groups"] if g.get("role") == ROLE_FINAL]

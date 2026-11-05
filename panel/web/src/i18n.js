@@ -76,6 +76,8 @@ export const EN = {
  "确定重命名分流组？": "Rename this routing group?",
  "新名称": "New name",
  "暂无分流组": "No routing groups",
+ "拖动调整顺序（与主配置一致），点顶部「重载配置」后生效。": "Drag to reorder (same order as the main config). Takes effect after Reload.",
+ "外部分流 URL（引入时填写）": "External routing URL (for import)",
  "自定义模式下分流解析失败": "Could not parse routing in custom mode",
  "分流规则写在独立 YAML，通过主配置引入。重载后生效。": "Routing rules live in separate YAML files included by the main config. Applies on reload.",
  "编辑 YAML": "Edit YAML",
