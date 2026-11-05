@@ -3,6 +3,10 @@
 Groups live as separate YAML files under /etc/clashgate/routing/, indexed by
 routing.json. Assemble merges them into rule-providers / proxy-groups / rules
 fragments substituted into server.yaml.tpl.
+
+User-pasted classical rules (DOMAIN/IP/…) that target the group itself are
+emitted as routing/<id>.rules.yaml (payload) + a type:file rule-provider and
+a single RULE-SET line in main rules — not inlined one-by-one into config.yaml.
 """
 from __future__ import annotations
 
@@ -261,7 +265,63 @@ class RoutingManager:
                 return g
         return None
 
+    def _rule_target(self, rule: str) -> str | None:
+        parts = [p.strip() for p in str(rule).split(",")]
+        if len(parts) < 2:
+            return None
+        if parts[-1] == "no-resolve" and len(parts) >= 3:
+            return parts[-2].strip('"')
+        return parts[-1].strip('"')
+
+    def _strip_rule_target(self, rule: str, target: str) -> str:
+        """Drop the proxy-group target so a classical rule-provider payload can use it."""
+        parts = [p.strip() for p in str(rule).split(",")]
+        if parts and parts[-1] == "no-resolve" and len(parts) >= 3 and parts[-2].strip('"') == target:
+            return ",".join(parts[:-2] + ["no-resolve"])
+        if len(parts) >= 2 and parts[-1].strip('"') == target:
+            return ",".join(parts[:-1])
+        return str(rule)
+
+    def _file_provider_name(self, gid: str) -> str:
+        return f"cg-file-{gid}"
+
+    def _rules_payload_filename(self, gid: str) -> str:
+        return f"{gid}.rules.yaml"
+
+    def _write_classical_payload(self, filename: str, payload_rules: list):
+        lines = ["payload:"]
+        for r in payload_rules:
+            lines.append("  - " + self.yaml_scalar(r))
+        self.atomic_write(self.group_path(filename), "\n".join(lines) + "\n", 0o640)
+
+    def _cleanup_generated_rule_files(self, keep_names: set):
+        try:
+            names = os.listdir(self.routing_dir)
+        except FileNotFoundError:
+            return
+        for name in names:
+            if not name.endswith(".rules.yaml"):
+                continue
+            if name in keep_names:
+                continue
+            try:
+                os.remove(self.group_path(name))
+            except OSError:
+                pass
+
     def regenerate_frags(self, meta: dict = None) -> tuple[str, str, str]:
+        """Assemble fragments.
+
+        Classical DOMAIN/IP/… rules that target a group's own proxy name are
+        written to routing/<id>.rules.yaml and introduced via a file
+        rule-provider + RULE-SET (so main config.yaml stays short). Existing
+        HTTP rule-providers (AI / Social / China) and already-written RULE-SET
+        lines are left unchanged.
+
+        Edge case: a pasted rule whose target is a *different* proxy group
+        (e.g. DIRECT) is kept inlined in main rules — safer than refusing the
+        whole paste. Prefer putting only same-group classical rules in a group.
+        """
         meta = meta or self.load_meta()
         providers: dict = {}
         proxy_groups: list = []
@@ -269,6 +329,7 @@ class RoutingManager:
         final_name = "Final"
         select_name = "Node Select"
         china_name = None
+        generated_payloads: set = set()
 
         for g in meta.get("groups") or []:
             raw = self.read_group_raw(g["file"])
@@ -292,10 +353,47 @@ class RoutingManager:
                 select_name = gname
             elif g.get("id") == "china":
                 china_name = gname
+
+            own_classical: list = []
+            passthrough: list = []
             for rule in doc.get("rules") or []:
-                if role == ROLE_FINAL and str(rule).upper().startswith("MATCH,"):
+                rs = str(rule).strip()
+                if not rs:
+                    continue
+                upper = rs.upper()
+                if role == ROLE_FINAL and upper.startswith("MATCH,"):
                     continue  # MATCH injected at end
-                policy_rules.append(rule)
+                if upper.startswith("RULE-SET,"):
+                    passthrough.append(rs)
+                    continue
+                if upper.startswith("MATCH,"):
+                    passthrough.append(rs)
+                    continue
+                target = self._rule_target(rs)
+                if role == ROLE_POLICY and target == gname:
+                    own_classical.append(self._strip_rule_target(rs, gname))
+                else:
+                    # Foreign target (DIRECT / another group) or non-policy: keep inlined
+                    passthrough.append(rs)
+
+            if own_classical and role == ROLE_POLICY:
+                gid = str(g.get("id") or _slugify(gname))
+                pname = self._file_provider_name(gid)
+                payload_file = self._rules_payload_filename(gid)
+                if pname in providers:
+                    raise ValueError(f"rule-provider 名称冲突：{pname}")
+                self._write_classical_payload(payload_file, own_classical)
+                generated_payloads.add(payload_file)
+                # path relative to mihomo -d (/etc/clashgate)
+                providers[pname] = {
+                    "type": "file",
+                    "behavior": "classical",
+                    "path": f"./routing/{payload_file}",
+                }
+                policy_rules.append(f"RULE-SET,{pname},{gname}")
+            policy_rules.extend(passthrough)
+
+        self._cleanup_generated_rule_files(generated_payloads)
 
         rules = list(BUILTIN_ALWAYS_RULES_HEAD) + policy_rules
         rules.append(BUILTIN_PRIVATE_RULE)
