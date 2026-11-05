@@ -3038,7 +3038,7 @@ onUnmounted(() => {
             <section class="cg-surface rounded-2xl p-5 sm:p-6 space-y-3 h-full flex flex-col">
               <div>
                 <div class="flex items-center gap-2">
-                  <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 text-[11px] font-bold border border-emerald-200/70">本地</span>
+                  <span class="inline-flex h-6 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-200/70 px-1.5">{{ t('本地') }}</span>
                   <h3 class="text-sm font-bold text-slate-900">{{ t('新建分流组') }}</h3>
                 </div>
                 <p class="text-xs text-slate-500 mt-1.5 leading-relaxed">{{ t('粘贴 DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR 等经典规则，保存为本地规则文件并由主配置引入。') }}</p>
