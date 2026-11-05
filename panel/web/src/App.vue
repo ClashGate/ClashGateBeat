@@ -96,6 +96,8 @@ const state = reactive({
   routing: boot.routing && typeof boot.routing === 'object' ? boot.routing : { ok: true, custom_mode: false, groups: [], error: '' },
   custom_server_enabled: !!boot.custom_server_enabled,
   auto_update: !!boot.auto_update,
+  update_channel: boot.update_channel === 'test' ? 'test' : 'stable',
+  update_channel_label: boot.update_channel_label || (boot.update_channel === 'test' ? '测试' : '正式'),
   masque: {
     status: (boot.masque && boot.masque.status) || 'idle',
     name: (boot.masque && boot.masque.name) || '⛅️ Cloudflare-MASQUE',
@@ -789,6 +791,8 @@ async function refreshServerStateSilent() {
         if (data.cert_hours !== undefined) state.cert_hours = data.cert_hours
         if (data.custom_server_enabled !== undefined) state.custom_server_enabled = !!data.custom_server_enabled
         if (data.auto_update !== undefined) state.auto_update = !!data.auto_update
+        if (data.update_channel !== undefined) state.update_channel = data.update_channel === 'test' ? 'test' : 'stable'
+        if (data.update_channel_label !== undefined) state.update_channel_label = data.update_channel_label || state.update_channel_label
         if (data.masque) {
           state.masque = {
             status: data.masque.status || state.masque.status,
@@ -842,6 +846,10 @@ function applyServerState(newState) {
   if (newState.custom_config_mode !== undefined) state.custom_config_mode = newState.custom_config_mode
   if (newState.custom_server_enabled !== undefined) state.custom_server_enabled = !!newState.custom_server_enabled
   if (newState.auto_update !== undefined) state.auto_update = !!newState.auto_update
+  if (newState.update_channel !== undefined) state.update_channel = newState.update_channel === 'test' ? 'test' : 'stable'
+  if (newState.update_channel_label !== undefined) {
+    state.update_channel_label = newState.update_channel_label || state.update_channel_label
+  }
   if (newState.masque && typeof newState.masque === 'object') {
     state.masque = {
       status: newState.masque.status || 'idle',
@@ -1526,6 +1534,20 @@ async function toggleAutoUpdate() {
   )
 }
 
+async function setUpdateChannel(channel) {
+  const next = channel === 'test' ? 'test' : 'stable'
+  if (state.update_channel === next) return
+  const res = await postAction(
+    '/action/settings',
+    { update_channel: next },
+    '/action/settings'
+  )
+  if (res && res.ok) {
+    state.update_channel = next
+    state.update_channel_label = next === 'test' ? t('测试') : t('正式')
+  }
+}
+
 function masqueNodeName(name) {
   const n = String(name || 'Cloudflare-MASQUE').trim()
   return n.startsWith('⛅️') ? n : `⛅️ ${n}`
@@ -1988,6 +2010,11 @@ onUnmounted(() => {
               {{ state.pending_reload_count }}
             </span>
           </button>
+          <span
+            v-if="state.update_channel === 'test'"
+            class="px-2 py-1 rounded-lg text-[10px] font-bold tracking-wide uppercase bg-amber-100 text-amber-800 border border-amber-200"
+            :title="t('当前为测试更新通道')"
+          >{{ t('测试通道') }}</span>
           <button
             type="button"
             :disabled="busyKey === '/action/check-update' || busyKey === '/action/upgrade-self'"
@@ -3489,6 +3516,39 @@ onUnmounted(() => {
                 <span></span>
               </button>
             </div>
+          </section>
+
+          <section class="cg-surface rounded-2xl p-5 sm:p-6 space-y-4 lg:col-span-2">
+            <div>
+              <h2 class="text-base font-bold text-slate-900 tracking-tight">{{ t('更新通道') }}</h2>
+              <p class="text-xs text-slate-500 mt-1 leading-relaxed max-w-2xl">
+                {{ t('正式通道跟随 ClashGate 主分支；测试通道跟随 test 分支，方便提前体验新功能。默认正式，切换后请点顶部「检查更新」。') }}
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="px-3.5 py-2 rounded-xl text-sm font-semibold border transition cursor-pointer"
+                :class="state.update_channel === 'stable'
+                  ? 'bg-slate-900 text-white border-slate-900'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'"
+                :disabled="busyKey === '/action/settings'"
+                @click="setUpdateChannel('stable')"
+              >{{ t('正式') }}</button>
+              <button
+                type="button"
+                class="px-3.5 py-2 rounded-xl text-sm font-semibold border transition cursor-pointer"
+                :class="state.update_channel === 'test'
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'"
+                :disabled="busyKey === '/action/settings'"
+                @click="setUpdateChannel('test')"
+              >{{ t('测试') }}</button>
+            </div>
+            <p class="text-[11px] text-slate-500 font-mono">
+              ClashGate/ClashGate@{{ state.update_channel === 'test' ? 'test' : 'main' }}
+              <span v-if="state.update_channel === 'test'" class="ml-2 text-amber-700 font-sans font-semibold">{{ t('当前为测试更新通道') }}</span>
+            </p>
           </section>
 
           <section class="cg-surface rounded-2xl">

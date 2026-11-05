@@ -59,7 +59,12 @@ PANEL_SETTINGS = CS_ROOT + "/panel_settings.json"
 MASQUE_JSON = CS_ROOT + "/masque.json"
 MASQUE_NAME = "⛅️ Cloudflare-MASQUE"
 UPDATE_CHECK_JSON = CS_ROOT + "/update_check.json"
+UPDATE_SOURCE_JSON = CS_ROOT + "/update_source.json"
 UPDATE_CHECK_INTERVAL = 7 * 24 * 3600
+UPDATE_CHANNEL_MAP = {
+    "stable": {"owner": "ClashGate", "name": "ClashGate", "branch": "main", "label": "正式"},
+    "test": {"owner": "ClashGate", "name": "ClashGate", "branch": "test", "label": "测试"},
+}
 MIHOMO_DIR = CS_ROOT
 CONF = MIHOMO_DIR + "/config.yaml"
 CUSTOM_CONF = MIHOMO_DIR + "/custom_config.yaml"
@@ -1919,13 +1924,16 @@ def forget_session(tok: str):
 
 
 def load_panel_settings() -> dict:
-    out = {"custom_server_enabled": False, "auto_update": False}
+    out = {"custom_server_enabled": False, "auto_update": False, "update_channel": ""}
     try:
         with open(PANEL_SETTINGS) as f:
             raw = json.load(f)
         if isinstance(raw, dict):
             out["custom_server_enabled"] = bool(raw.get("custom_server_enabled"))
             out["auto_update"] = bool(raw.get("auto_update"))
+            ch = str(raw.get("update_channel") or "").strip().lower()
+            if ch in ("stable", "test"):
+                out["update_channel"] = ch
     except Exception:
         pass
     return out
@@ -1936,6 +1944,10 @@ def save_panel_settings(updates: dict):
     for key in ("custom_server_enabled", "auto_update"):
         if key in updates:
             cur[key] = bool(updates[key])
+    if "update_channel" in updates:
+        ch = str(updates.get("update_channel") or "").strip().lower()
+        if ch in ("stable", "test"):
+            cur["update_channel"] = ch
     atomic_write(
         PANEL_SETTINGS,
         json.dumps(cur, indent=2) + "\n",
@@ -3492,41 +3504,153 @@ def _http_get_text(url: str, timeout: int = 20, headers: dict = None) -> str:
         raise RuntimeError(f"无法连接 GitHub，请检查服务器网络（{reason}）") from None
 
 
-def _resolve_repo_slug(env: dict = None) -> str:
-    """Resolve REPO_SLUG from env / scripts/lib/common.sh / defaults (ClashGate/ClashGate)."""
+def _normalize_update_channel(raw: str) -> str:
+    ch = (raw or "").strip().lower()
+    if ch in ("stable", "production", "正式"):
+        return "stable"
+    if ch in ("test", "beat", "测试"):
+        return "test"
+    return ""
+
+
+def resolve_update_channel(env: dict = None, settings: dict = None) -> str:
+    """Return stable|test. Default stable; legacy ClashGateBeat installs map to test."""
+    if settings is None:
+        settings = load_panel_settings()
+    ch = _normalize_update_channel(settings.get("update_channel") or "")
+    if ch:
+        return ch
     if env is None:
         env = read_env()
-    common_vars = {}
-    for p in (
-        CS_ROOT + "/scripts/lib/common.sh",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts/lib/common.sh"),
-    ):
-        if os.path.isfile(p):
-            try:
-                with open(p) as f:
-                    for line in f:
-                        m = re.match(r"^(REPO_OWNER|REPO_NAME)=\$\{\1:-([^}]+)\}", line.strip())
-                        if m:
-                            common_vars[m.group(1)] = m.group(2).strip()
-                break
-            except Exception:
-                pass
-    owner = os.environ.get("REPO_OWNER") or env.get("REPO_OWNER") or common_vars.get("REPO_OWNER") or REPO_OWNER
-    name = os.environ.get("REPO_NAME") or env.get("REPO_NAME") or common_vars.get("REPO_NAME") or REPO_NAME
-    return os.environ.get("REPO_SLUG") or env.get("REPO_SLUG") or f"{owner}/{name}"
+    env_ch = _normalize_update_channel(env.get("UPDATE_CHANNEL") or os.environ.get("UPDATE_CHANNEL") or "")
+    if env_ch:
+        return env_ch
+    name = (os.environ.get("REPO_NAME") or env.get("REPO_NAME") or "").strip()
+    if name.endswith("Beat"):
+        return "test"
+    return "stable"
+
+
+def resolve_update_target(env: dict = None, settings: dict = None) -> dict:
+    """Resolve repo/branch for the active update channel."""
+    if env is None:
+        env = read_env()
+    channel = resolve_update_channel(env, settings)
+    meta = dict(UPDATE_CHANNEL_MAP[channel])
+    # Until the user explicitly picks a channel, keep downloading from the installed Beat repo.
+    settings = settings if settings is not None else load_panel_settings()
+    explicit = _normalize_update_channel(settings.get("update_channel") or "")
+    env_ch = _normalize_update_channel(env.get("UPDATE_CHANNEL") or "")
+    name = (os.environ.get("REPO_NAME") or env.get("REPO_NAME") or "").strip()
+    if not explicit and not env_ch and name.endswith("Beat"):
+        owner = os.environ.get("REPO_OWNER") or env.get("REPO_OWNER") or "ClashGate"
+        return {
+            "channel": "test",
+            "owner": owner,
+            "name": name,
+            "branch": (env.get("REPO_BRANCH") or "main").strip() or "main",
+            "label": "测试",
+            "slug": f"{owner}/{name}",
+            "legacy_beat": True,
+        }
+    slug = f"{meta['owner']}/{meta['name']}"
+    return {
+        "channel": channel,
+        "owner": meta["owner"],
+        "name": meta["name"],
+        "branch": meta["branch"],
+        "label": meta["label"],
+        "slug": slug,
+        "legacy_beat": False,
+    }
+
+
+def apply_update_channel_env(channel: str):
+    """Persist channel choice into panel_settings + clashgate.env (retires Beat when set)."""
+    ch = _normalize_update_channel(channel)
+    if ch not in UPDATE_CHANNEL_MAP:
+        raise ValueError("invalid update channel")
+    meta = UPDATE_CHANNEL_MAP[ch]
+    save_panel_settings({"update_channel": ch})
+    write_env_var("UPDATE_CHANNEL", ch)
+    write_env_var("REPO_OWNER", meta["owner"])
+    write_env_var("REPO_NAME", meta["name"])
+    write_env_var("REPO_SLUG", f"{meta['owner']}/{meta['name']}")
+    write_env_var("REPO_BRANCH", meta["branch"])
+    return resolve_update_target()
+
+
+def _resolve_repo_slug(env: dict = None) -> str:
+    return resolve_update_target(env)["slug"]
+
+
+def load_update_source() -> dict:
+    out = {"channel": "", "repo": "", "branch": "", "sha": "", "version": "", "updated_at": 0}
+    try:
+        with open(UPDATE_SOURCE_JSON) as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            out.update({
+                "channel": str(raw.get("channel") or ""),
+                "repo": str(raw.get("repo") or ""),
+                "branch": str(raw.get("branch") or ""),
+                "sha": str(raw.get("sha") or ""),
+                "version": str(raw.get("version") or ""),
+                "updated_at": int(raw.get("updated_at") or 0),
+            })
+    except Exception:
+        pass
+    return out
+
+
+def save_update_source(data: dict):
+    cur = load_update_source()
+    cur.update({k: data[k] for k in data})
+    atomic_write(UPDATE_SOURCE_JSON, json.dumps(cur, ensure_ascii=False, indent=2) + "\n", 0o600)
+
+
+def fetch_channel_commit_sha(slug: str, branch: str) -> str:
+    url = f"https://api.github.com/repos/{slug}/commits/{branch}"
+    txt = _http_get_text(url, timeout=20, headers={"Accept": "application/vnd.github+json"})
+    data = json.loads(txt)
+    sha = str(data.get("sha") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError("未能从 GitHub 解析通道提交")
+    return sha
 
 
 def fetch_latest_clashgate_version() -> str:
-    slug = _resolve_repo_slug()
+    tip = fetch_channel_tip()
+    return tip["version"]
+
+
+def fetch_channel_tip() -> dict:
+    """Fetch CS_VERSION + tip SHA for the active update channel."""
+    target = resolve_update_target()
+    slug = target["slug"]
+    branch = target["branch"]
     url = os.environ.get(
         "CLASHGATE_RAW_COMMON",
-        f"https://raw.githubusercontent.com/{slug}/main/scripts/lib/common.sh",
+        f"https://raw.githubusercontent.com/{slug}/{branch}/scripts/lib/common.sh",
     )
     txt = _http_get_text(url, timeout=20)
     m = re.search(r"^CS_VERSION=([0-9A-Za-z._-]+)", txt, re.M)
     if not m:
         raise RuntimeError("未能从 GitHub 解析最新版本号")
-    return m.group(1).strip()
+    version = m.group(1).strip()
+    sha = ""
+    try:
+        sha = fetch_channel_commit_sha(slug, branch)
+    except Exception:
+        sha = ""
+    return {
+        "version": version,
+        "sha": sha,
+        "slug": slug,
+        "branch": branch,
+        "channel": target["channel"],
+        "label": target["label"],
+    }
 
 
 def fetch_latest_mihomo_release() -> dict:
@@ -3610,13 +3734,14 @@ def record_core_check(current: str, latest: str, has_update: bool):
     save_update_check(data)
 
 
-def record_panel_check(latest: str, has_update: bool):
+def record_panel_check(latest: str, has_update: bool, tip_sha: str = ""):
     data = load_update_check()
     data["panel"] = {
         "checked_at": int(time.time()),
         "current": VERSION,
         "latest": (latest or "").lstrip("vV"),
         "has_update": bool(has_update),
+        "latest_sha": (tip_sha or ""),
     }
     save_update_check(data)
 
@@ -3634,9 +3759,14 @@ def _check_due_updates():
             sys.stderr.write(f"mihomo version check failed: {e}\n")
     if _update_due(data["panel"]):
         try:
-            latest = fetch_latest_clashgate_version().lstrip("vV")
-            has = parse_version_tuple(latest) > parse_version_tuple(VERSION)
-            record_panel_check(latest, has)
+            tip = fetch_channel_tip()
+            latest = tip["version"].lstrip("vV")
+            target = resolve_update_target()
+            local_src = load_update_source()
+            ver_newer = parse_version_tuple(latest) > parse_version_tuple(VERSION)
+            sha_newer = bool(tip.get("sha") and tip["sha"] != (local_src.get("sha") or ""))
+            has = ver_newer or (target["channel"] == "test" and sha_newer)
+            record_panel_check(latest, has, tip_sha=tip.get("sha") or "")
         except Exception as e:
             sys.stderr.write(f"clashgate version check failed: {e}\n")
 
@@ -3664,9 +3794,14 @@ def _apply_auto_update():
         sys.stderr.write(f"auto update core check failed: {e}\n")
         core_has = bool(load_update_check()["core"].get("has_update"))
     try:
-        latest_cs = fetch_latest_clashgate_version().lstrip("vV")
-        panel_has = parse_version_tuple(latest_cs) > parse_version_tuple(VERSION)
-        record_panel_check(latest_cs, panel_has)
+        tip = fetch_channel_tip()
+        latest_cs = tip["version"].lstrip("vV")
+        target = resolve_update_target()
+        local_src = load_update_source()
+        ver_newer = parse_version_tuple(latest_cs) > parse_version_tuple(VERSION)
+        sha_newer = bool(tip.get("sha") and tip["sha"] != (local_src.get("sha") or ""))
+        panel_has = ver_newer or (target["channel"] == "test" and sha_newer)
+        record_panel_check(latest_cs, panel_has, tip_sha=tip.get("sha") or "")
     except Exception as e:
         sys.stderr.write(f"auto update panel check failed: {e}\n")
         panel_has = bool(load_update_check()["panel"].get("has_update"))
@@ -4126,6 +4261,7 @@ class Panel(BaseHTTPRequestHandler):
             "custom_config_mode": custom_active,
             "custom_server_enabled": bool(load_panel_settings().get("custom_server_enabled")),
             "auto_update": bool(load_panel_settings().get("auto_update")),
+            **(lambda t: {"update_channel": t["channel"], "update_channel_label": t["label"]})(resolve_update_target()),
             "custom_config_raw": cur_cfg,
             "masque": load_masque_state(),
             "update_check": public_update_check(),
@@ -4484,6 +4620,7 @@ class Panel(BaseHTTPRequestHandler):
 
     def do_settings(self, s, form):
         updates = {}
+        channel_raw = (form.get("update_channel") or "").strip()
         for key in ("custom_server_enabled", "auto_update"):
             if key not in form:
                 continue
@@ -4491,10 +4628,29 @@ class Panel(BaseHTTPRequestHandler):
             if raw not in ("0", "1", "false", "true", "on", "off"):
                 return self.respond_mutation(s, "设置项无效", False)
             updates[key] = raw in ("1", "true", "on")
+        if channel_raw:
+            ch = _normalize_update_channel(channel_raw)
+            if ch not in UPDATE_CHANNEL_MAP:
+                return self.respond_mutation(s, "设置项无效", False)
+            updates["update_channel"] = ch
         if not updates:
             return self.respond_mutation(s, "设置项无效", False)
         with LOCK:
-            save_panel_settings(updates)
+            if "update_channel" in updates:
+                apply_update_channel_env(updates["update_channel"])
+                # Keep other toggles if sent together.
+                other = {k: updates[k] for k in ("custom_server_enabled", "auto_update") if k in updates}
+                if other:
+                    save_panel_settings(other)
+            else:
+                save_panel_settings(updates)
+        if "update_channel" in updates and len(updates) == 1:
+            branch = UPDATE_CHANNEL_MAP[updates["update_channel"]]["branch"]
+            if updates["update_channel"] == "test":
+                msg = "已切换到测试通道（ClashGate/ClashGate@test）。请点「检查更新」拉取该通道版本。"
+            else:
+                msg = "已切换到正式通道（ClashGate/ClashGate@main）。请点「检查更新」拉取该通道版本。"
+            return self.respond_mutation(s, msg, True)
         if "auto_update" in updates and len(updates) == 1:
             if updates["auto_update"]:
                 return self.respond_mutation(s, "已开启每周自动更新。更新面板时会同时更新 Mihomo 内核。", True)
@@ -4725,19 +4881,37 @@ class Panel(BaseHTTPRequestHandler):
 
     def do_check_update(self, s):
         try:
-            latest_cs = fetch_latest_clashgate_version()
+            tip = fetch_channel_tip()
+            latest_cs = tip["version"]
             cur_cs = VERSION
-            has_update = parse_version_tuple(latest_cs) > parse_version_tuple(cur_cs)
-            record_panel_check(latest_cs, has_update)
-            if has_update:
-                msg = f"发现新版本 v{latest_cs}（当前 v{cur_cs}）"
+            target = resolve_update_target()
+            local_src = load_update_source()
+            ver_newer = parse_version_tuple(latest_cs) > parse_version_tuple(cur_cs)
+            sha_newer = bool(tip.get("sha") and tip["sha"] != (local_src.get("sha") or ""))
+            # Stable: version only. Test: also treat a newer tip SHA as an update.
+            if target["channel"] == "test":
+                has_update = ver_newer or sha_newer
             else:
-                msg = f"当前已是最新版本（v{cur_cs}）"
+                has_update = ver_newer
+            record_panel_check(latest_cs, has_update, tip_sha=tip.get("sha") or "")
+            ch_label = target.get("label") or ("测试" if target["channel"] == "test" else "正式")
+            if has_update:
+                msg = f"发现新版本 v{latest_cs}（当前 v{cur_cs}，通道：{ch_label}"
+                if tip.get("sha"):
+                    msg += f"，{tip['sha'][:7]}"
+                msg += "）"
+            else:
+                msg = f"当前已是最新版本（v{cur_cs}，通道：{ch_label}）"
             payload = {
                 "ok": True,
                 "has_update": has_update,
                 "current_version": cur_cs,
                 "latest_version": latest_cs,
+                "update_channel": target["channel"],
+                "update_channel_label": ch_label,
+                "repo": tip.get("slug") or target["slug"],
+                "branch": tip.get("branch") or target["branch"],
+                "latest_sha": tip.get("sha") or "",
                 "msg": msg,
             }
             if not self.is_ajax():
@@ -4755,11 +4929,27 @@ class Panel(BaseHTTPRequestHandler):
             cmd_bin = CLASHGATE_BIN if os.path.isfile(CLASHGATE_BIN) else "/usr/local/bin/clashgate"
             if not os.path.isfile(cmd_bin):
                 return self.respond_mutation(s, "升级失败：未找到 clashgate 管理脚本", False)
+            # Ensure clashgate update uses the selected channel (env already written on channel change).
             rc, out = run(["bash", cmd_bin, "update"], timeout=180)
             if rc != 0:
                 tail = " | ".join(l for l in out.splitlines() if l.strip())[-300:]
                 return self.respond_mutation(s, f"升级失败：{tail}", False)
-            record_panel_check(VERSION, False)
+            tip_sha = ""
+            try:
+                tip = fetch_channel_tip()
+                tip_sha = tip.get("sha") or ""
+                target = resolve_update_target()
+                save_update_source({
+                    "channel": target["channel"],
+                    "repo": tip.get("slug") or target["slug"],
+                    "branch": tip.get("branch") or target["branch"],
+                    "sha": tip_sha,
+                    "version": tip.get("version") or VERSION,
+                    "updated_at": int(time.time()),
+                })
+            except Exception:
+                pass
+            record_panel_check(VERSION, False, tip_sha=tip_sha)
         return self.respond_mutation(s, "升级成功！ClashGate 与 Mihomo 内核已更新至最新版本。", True)
 
     def do_add(self, s, form):
