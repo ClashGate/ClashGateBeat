@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ClashGate v1.06 - admin console (Vue 3 + Tailwind CSS).
+"""ClashGate v1.07 - admin console (Vue 3 + Tailwind CSS).
 
 Stdlib only (Python 3). Serves HTTPS itself with the same certificate
 Mihomo uses (/etc/clashgate/certs); no reverse proxy.
@@ -40,8 +40,9 @@ from urllib.parse import parse_qs, urlparse, quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from i18n_en import tr as _tr_msg, detect_lang as _detect_lang  # noqa: E402  (0.97 i18n: zh default, en on cookie clashgate_lang=en)
+from routing_mgr import RoutingManager, parse_yaml_document_factory  # noqa: E402
 
-VERSION = "1.06"
+VERSION = "1.07"
 
 # CLASHGATE_ROOT lets the panel run against a fake tree for local testing.
 ROOT = os.environ.get("CLASHGATE_ROOT", "")
@@ -68,6 +69,11 @@ FRAG_REALITY = MIHOMO_DIR + "/listeners.reality.yaml"
 FRAG_EXTRA = MIHOMO_DIR + "/listeners.extra.yaml"
 FRAG_PROXIES = MIHOMO_DIR + "/proxies.extra.yaml"
 FRAG_PROVIDERS = MIHOMO_DIR + "/providers.extra.yaml"
+ROUTING_JSON = CS_ROOT + "/routing.json"
+ROUTING_DIR = CS_ROOT + "/routing"
+FRAG_RULE_PROVIDERS = MIHOMO_DIR + "/routing.rule-providers.yaml"
+FRAG_PROXY_GROUPS = MIHOMO_DIR + "/routing.proxy-groups.yaml"
+FRAG_RULES = MIHOMO_DIR + "/routing.rules.yaml"
 TEMPLATE = CS_ROOT + "/resources/server.yaml.tpl"
 CLIENT_TEMPLATE = CS_ROOT + "/resources/client.yaml.tpl"
 CLIENT_DIR = CS_ROOT + "/client"
@@ -236,6 +242,39 @@ def resolve_certctl_path() -> str:
     if os.path.isfile(CERTCTL):
         return CERTCTL
     return resolve_template_path("scripts/certctl.sh")
+
+
+_ROUTING = None
+
+
+def _seed_dir() -> str:
+    p1 = CS_ROOT + "/resources/routing"
+    if os.path.isdir(p1):
+        return p1
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p2 = os.path.join(here, "resources", "routing")
+    return p2 if os.path.isdir(p2) else p1
+
+
+def get_routing() -> RoutingManager:
+    global _ROUTING
+    if _ROUTING is None:
+        parse_doc = parse_yaml_document_factory(parse_yaml_lines, strip_yaml_comment)
+        _ROUTING = RoutingManager(
+            routing_json=ROUTING_JSON,
+            routing_dir=ROUTING_DIR,
+            frag_rule_providers=FRAG_RULE_PROVIDERS,
+            frag_proxy_groups=FRAG_PROXY_GROUPS,
+            frag_rules=FRAG_RULES,
+            seed_dir=_seed_dir(),
+            parse_yaml_document=parse_doc,
+            dump_yaml_map=dump_yaml_map,
+            yaml_scalar=yaml_scalar,
+            atomic_write=atomic_write,
+            extract_top_level_yaml_section=extract_top_level_yaml_section,
+            replace_top_level_yaml_section=replace_top_level_yaml_section,
+        )
+    return _ROUTING
 
 
 def ensure_unified_root():
@@ -1765,6 +1804,12 @@ def assemble_config() -> str:
                 block += f.read()
         except FileNotFoundError:
             pass
+    try:
+        get_routing().ensure_seeded()
+    except Exception as e:
+        sys.stderr.write(f"routing seed warning: {e}\n")
+    rp_block, pg_block, ru_block = get_routing().read_frags()
+
     out = []
     tpl_path = resolve_template_path("resources/server.yaml.tpl")
     with open(tpl_path) as f:
@@ -1777,6 +1822,13 @@ def assemble_config() -> str:
                     out.append(providers_block)
             elif s == "@@PROXIES@@":
                 out.append(proxies_block)
+            elif s == "@@RULE_PROVIDERS@@":
+                if rp_block.strip():
+                    out.append(rp_block if rp_block.endswith("\n") else rp_block + "\n")
+            elif s == "@@PROXY_GROUPS@@":
+                out.append(pg_block if pg_block.endswith("\n") else pg_block + "\n")
+            elif s == "@@RULES@@":
+                out.append(ru_block if ru_block.endswith("\n") else ru_block + "\n")
             elif s == "@@LISTENERS@@":
                 out.append("listeners:\n" + block if block.strip() else "listeners: []\n")
             else:
@@ -2595,7 +2647,29 @@ _TRACKED_DRAFT_FILES = (
     NODES_TSV, INBOUNDS, PROXIES_JSON, PROVIDERS_JSON,
     FRAG_REALITY, FRAG_EXTRA, FRAG_PROXIES, FRAG_PROVIDERS,
     FRAG_CONTROLLER, CUSTOM_CONF,
+    ROUTING_JSON, FRAG_RULE_PROVIDERS, FRAG_PROXY_GROUPS, FRAG_RULES,
 )
+
+
+def _all_tracked_draft_files() -> tuple:
+    """Fixed tracked files plus any per-group routing YAML currently on disk."""
+    extra = []
+    try:
+        for name in os.listdir(ROUTING_DIR):
+            if name.endswith((".yaml", ".yml")):
+                extra.append(os.path.join(ROUTING_DIR, name))
+    except FileNotFoundError:
+        pass
+    return _TRACKED_DRAFT_FILES + tuple(extra)
+
+
+def _is_tracked_draft_path(p: str) -> bool:
+    if p in _TRACKED_DRAFT_FILES:
+        return True
+    try:
+        return os.path.commonpath([p, ROUTING_DIR]) == ROUTING_DIR and p.endswith((".yaml", ".yml"))
+    except ValueError:
+        return False
 
 
 def _conf_digest() -> str:
@@ -2613,7 +2687,7 @@ def _ensure_pending_baseline():
     if has_pending and os.path.isfile(PENDING_BASELINE_JSON):
         return
     files = {}
-    for p in _TRACKED_DRAFT_FILES:
+    for p in _all_tracked_draft_files():
         try:
             with open(p) as f:
                 files[p] = f.read()
@@ -2702,6 +2776,13 @@ def _reconstruct_draft_from_live_conf():
     atomic_write(FRAG_PROVIDERS, dump_yaml_providers(new_providers), 0o640)
 
 
+    try:
+        get_routing().ensure_seeded(force=False)
+        get_routing().regenerate_frags()
+    except Exception as e:
+        sys.stderr.write(f"routing reconstruct warning: {e}\n")
+
+
 def discard_pending_reload():
     """Roll back all draft files to match current live CONF without reloading Mihomo or touching CONF."""
     global _PENDING_UFW_BASELINE
@@ -2714,7 +2795,7 @@ def discard_pending_reload():
                 cur_digest = _conf_digest()
                 if not cur_digest or snap.get("conf_sha256") == cur_digest:
                     for p, data in snap["files"].items():
-                        if p not in _TRACKED_DRAFT_FILES:
+                        if not _is_tracked_draft_path(p):
                             continue
                         if data is None:
                             if os.path.exists(p):
@@ -2731,6 +2812,24 @@ def discard_pending_reload():
         env = read_env()
         if os.path.exists(FRAG_CONTROLLER) or env.get("MODE") == "auto-cert":
             atomic_write(FRAG_CONTROLLER, render_controller_fragment(env), 0o640)
+        # Drop routing group YAML files created after the baseline snapshot
+        try:
+            with open(PENDING_BASELINE_JSON) as f:
+                snap2 = json.load(f)
+            kept = set()
+            if isinstance(snap2, dict) and isinstance(snap2.get("files"), dict):
+                for p, data in snap2["files"].items():
+                    if data is not None and _is_tracked_draft_path(p):
+                        kept.add(p)
+            if os.path.isdir(ROUTING_DIR):
+                for name in os.listdir(ROUTING_DIR):
+                    if not name.endswith((".yaml", ".yml")):
+                        continue
+                    fp = os.path.join(ROUTING_DIR, name)
+                    if fp not in kept and os.path.isfile(fp):
+                        os.remove(fp)
+        except Exception:
+            pass
     _PENDING_UFW_BASELINE = None
     _RECENT_ADD_REQS.clear()
     clear_pending_reload()
@@ -2764,6 +2863,9 @@ def record_pending_reload(op: str, name: str = "", port: int = None, kind: str =
     elif op == "add":
         items = [it for it in items if not (it.get("name") == name and it.get("op") in ("add", "delete"))]
         items.append({"op": "add", "kind": kind, "name": name, "port": port, "detail": detail})
+    elif op in ("add-routing", "delete-routing", "rename-routing", "reorder-routing", "update-routing", "import-routing"):
+        items = [it for it in items if not (it.get("op") == op and it.get("name") == name)]
+        items.append({"op": op, "kind": "routing", "name": name, "port": port, "detail": detail})
     elif op in ("add-proxy", "delete-proxy", "add-provider", "delete-provider"):
         base_kind = "proxy" if "proxy" in op else "provider"
         if op.startswith("delete-"):
@@ -3112,6 +3214,7 @@ def reset_to_template_config():
         atomic_write(FRAG_PROXIES, "", 0o640)
         atomic_write(FRAG_PROVIDERS, "", 0o640)
         atomic_write(FRAG_CONTROLLER, render_controller_fragment(env), 0o640)
+        get_routing().ensure_seeded(force=True)
         atomic_write(CONF, assemble_config(), 0o640)
         rc, out = validate_config()
         if rc != 0:
@@ -4045,6 +4148,11 @@ class Panel(BaseHTTPRequestHandler):
             "all_proxies_yaml": all_proxies_yaml,
             "proxies": proxy_items,
             "providers": provider_items,
+            "routing": (
+                get_routing().public_state(cur_cfg, custom_mode=True)
+                if custom_active
+                else get_routing().public_state()
+            ),
         }
 
     def respond_mutation(self, s, msg: str, ok: bool = True):
@@ -4140,6 +4248,8 @@ class Panel(BaseHTTPRequestHandler):
             return self.send(200, self.dashboard(s, initial_tab="inbounds"))
         if path in ("/outbounds",):
             return self.send(200, self.dashboard(s, initial_tab="outbounds"))
+        if path in ("/routing",):
+            return self.send(200, self.dashboard(s, initial_tab="routing"))
         if path in ("/readable", "/convert"):
             return self.send(200, self.dashboard(s, initial_tab="readable"))
         if path in ("/advanced", "/custom-config"):
@@ -4247,6 +4357,18 @@ class Panel(BaseHTTPRequestHandler):
             return self.do_add_provider(s, form)
         if path == "/providers/delete":
             return self.do_delete_provider(s, form.get("name", ""))
+        if path == "/routing/add":
+            return self.do_routing_add(s, form)
+        if path == "/routing/import":
+            return self.do_routing_import(s, form)
+        if path == "/routing/delete":
+            return self.do_routing_delete(s, form)
+        if path == "/routing/rename":
+            return self.do_routing_rename(s, form)
+        if path == "/routing/reorder":
+            return self.do_routing_reorder(s, form)
+        if path == "/routing/update":
+            return self.do_routing_update(s, form)
         if path == "/config/custom":
             return self.do_save_custom_config(s, form)
         if path == "/config/reset-template":
@@ -4368,7 +4490,7 @@ class Panel(BaseHTTPRequestHandler):
 
     def do_masque_register(self, s):
         start_masque_registrar(force=True)
-        return self.respond_mutation(s, "正在向 Cloudflare 注册 MASQUE，完成后点「加入出站节点」。", True)
+        return self.respond_mutation(s, "正在向 Cloudflare 注册 MASQUE，完成后点「加入服务端出站」。", True)
 
     def do_change_password(self, s, form):
         cur_pw = form.get("current_password", "")
@@ -4440,10 +4562,32 @@ class Panel(BaseHTTPRequestHandler):
                 _sync_custom_conf_listeners(cur_nodes, cur_inbs)
                 _sync_custom_conf_proxies(cur_proxies)
                 _sync_custom_conf_providers(cur_providers)
+            conf_backup = None
+            custom_backup = None
+            try:
+                with open(CONF) as f:
+                    conf_backup = f.read()
+            except FileNotFoundError:
+                conf_backup = None
+            if is_custom_config_mode():
+                try:
+                    with open(CUSTOM_CONF) as f:
+                        custom_backup = f.read()
+                except FileNotFoundError:
+                    custom_backup = None
+            try:
+                get_routing().ensure_seeded()
+                get_routing().regenerate_frags()
+            except Exception as e:
+                return self.respond_mutation(s, f"分流配置组装失败：{e}", False)
             atomic_write(CONF, assemble_config(), 0o640)
             sync_client_files()
             rc, out = validate_config()
             if rc != 0:
+                if conf_backup is not None:
+                    atomic_write(CONF, conf_backup, 0o640)
+                if custom_backup is not None:
+                    atomic_write(CUSTOM_CONF, custom_backup, 0o640)
                 return self.respond_mutation(s, f"配置校验未通过，未执行{zh}：" + out[-300:], False)
             new_specs = collect_ufw_specs(cur_nodes, cur_inbs)
             old_specs = _PENDING_UFW_BASELINE if _PENDING_UFW_BASELINE is not None else new_specs
@@ -4455,6 +4599,12 @@ class Panel(BaseHTTPRequestHandler):
                 st_now = mihomo_status()
                 if st_now["listening"] and not expected_ports.issubset(set(st_now["listening"])):
                     rc, out = run([SYSTEMCTL, "restart", "mihomo"])
+            if rc != 0:
+                if conf_backup is not None:
+                    atomic_write(CONF, conf_backup, 0o640)
+                if custom_backup is not None:
+                    atomic_write(CUSTOM_CONF, custom_backup, 0o640)
+                run([SYSTEMCTL, "restart", "mihomo"])
             if rc == 0:
                 clear_pending_reload()
                 wait_mihomo_ports()
@@ -4771,7 +4921,7 @@ class Panel(BaseHTTPRequestHandler):
                         kind="proxy",
                         name=p["name"],
                         port=p.get("port"),
-                        detail=f"+ 添加出站节点「{p['name']}」",
+                        detail=f"+ 添加服务端出站「{p['name']}」",
                     )
             except Exception as e:
                 return self.respond_mutation(s, f"添加服务端 proxies 节点失败：{e}", False)
@@ -4790,7 +4940,7 @@ class Panel(BaseHTTPRequestHandler):
                     op="delete-proxy",
                     kind="proxy",
                     name=name,
-                    detail=f"- 删除出站节点「{name}」",
+                    detail=f"- 删除服务端出站「{name}」",
                 )
             except Exception as e:
                 return self.respond_mutation(s, f"删除服务端节点失败：{e}", False)
@@ -4834,6 +4984,142 @@ class Panel(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.respond_mutation(s, f"删除订阅源失败：{e}", False)
         return self.respond_mutation(s, f"已删除订阅源「{name}」，请点顶部「重载配置」生效", True)
+
+
+    def do_routing_add(self, s, form):
+        name = (form.get("name") or "").strip()
+        yaml_raw = form.get("yaml_raw", "")
+        with LOCK:
+            try:
+                _ensure_pending_baseline()
+                entry = get_routing().add_group(name=name, yaml_raw=yaml_raw)
+                record_pending_reload(
+                    op="add-routing",
+                    kind="routing",
+                    name=entry["name"],
+                    detail=f"+ 添加分流组「{entry['name']}」",
+                )
+            except Exception as e:
+                return self.respond_mutation(s, f"添加分流组失败：{e}", False)
+        return self.respond_mutation(s, f"已添加分流组「{entry['name']}」，已保存，请点顶部「重载配置」生效", True)
+
+    def do_routing_import(self, s, form):
+        name = (form.get("name") or "").strip()
+        url = (form.get("url") or "").strip()
+        yaml_raw = form.get("yaml_raw", "")
+        with LOCK:
+            try:
+                _ensure_pending_baseline()
+                entry = get_routing().import_group(name=name, url=url, yaml_raw=yaml_raw)
+                record_pending_reload(
+                    op="import-routing",
+                    kind="routing",
+                    name=entry["name"],
+                    detail=f"+ 引入分流组「{entry['name']}」",
+                )
+            except Exception as e:
+                return self.respond_mutation(s, f"引入分流规则失败：{e}", False)
+        return self.respond_mutation(s, f"已引入分流组「{entry['name']}」，已保存，请点顶部「重载配置」生效", True)
+
+    def do_routing_delete(self, s, form):
+        gid = (form.get("id") or "").strip()
+        with LOCK:
+            try:
+                _ensure_pending_baseline()
+                name = get_routing().delete_group(gid)
+                if not name:
+                    return self.respond_mutation(s, "已删除", True)
+                record_pending_reload(
+                    op="delete-routing",
+                    kind="routing",
+                    name=name,
+                    detail=f"- 删除分流组「{name}」",
+                )
+            except Exception as e:
+                return self.respond_mutation(s, f"删除分流组失败：{e}", False)
+        return self.respond_mutation(s, f"已删除分流组「{name}」，请点顶部「重载配置」生效", True)
+
+    def do_routing_rename(self, s, form):
+        gid = (form.get("id") or "").strip()
+        new_name = (form.get("name") or "").strip()
+        with LOCK:
+            try:
+                _ensure_pending_baseline()
+                old_name, new_name = get_routing().rename_group(gid, new_name)
+                if old_name != new_name:
+                    record_pending_reload(
+                        op="rename-routing",
+                        kind="routing",
+                        name=new_name,
+                        detail=f"~ 重命名分流组「{old_name}」→「{new_name}」",
+                    )
+            except Exception as e:
+                return self.respond_mutation(s, f"重命名分流组失败：{e}", False)
+        return self.respond_mutation(s, f"已重命名分流组为「{new_name}」，请点顶部「重载配置」生效", True)
+
+    def do_routing_reorder(self, s, form):
+        raw = (form.get("order") or "").strip()
+        with LOCK:
+            try:
+                if raw.startswith("["):
+                    order = json.loads(raw)
+                else:
+                    order = [x for x in raw.split(",") if x.strip()]
+                if not isinstance(order, list):
+                    raise ValueError("order 必须是数组")
+                order = [str(x).strip() for x in order if str(x).strip()]
+                _ensure_pending_baseline()
+                get_routing().reorder_groups(order)
+                record_pending_reload(
+                    op="reorder-routing",
+                    kind="routing",
+                    name="order",
+                    detail="~ 调整分流顺序",
+                )
+            except Exception as e:
+                return self.respond_mutation(s, f"调整分流顺序失败：{e}", False)
+        return self.respond_mutation(s, "已调整分流顺序，请点顶部「重载配置」生效", True)
+
+    def do_routing_update(self, s, form):
+        gid = (form.get("id") or "").strip()
+        yaml_raw = form.get("yaml_raw", "")
+        with LOCK:
+            try:
+                if is_custom_config_mode():
+                    # Custom mode: rewrite sections in CUSTOM_CONF from provided group yaml
+                    _ensure_pending_baseline()
+                    with open(CUSTOM_CONF) as f:
+                        raw = f.read()
+                    # Merge: update one group's yaml inside synthetic list then rewrite
+                    st = get_routing().public_state(raw, custom_mode=True)
+                    if not st.get("ok"):
+                        raise ValueError(st.get("error") or "自定义分流无法解析")
+                    groups = st.get("groups") or []
+                    found = False
+                    for g in groups:
+                        if g.get("id") == gid:
+                            g["yaml"] = yaml_raw
+                            found = True
+                            break
+                    if not found:
+                        raise ValueError("分流组不存在")
+                    updated = get_routing().apply_custom_routing_edit(
+                        raw, groups, rule_providers_yaml=st.get("rule_providers_yaml") or ""
+                    )
+                    atomic_write(CUSTOM_CONF, updated, 0o640)
+                    name = next((g.get("name") for g in groups if g.get("id") == gid), gid)
+                else:
+                    _ensure_pending_baseline()
+                    name = get_routing().update_group_yaml(gid, yaml_raw)
+                record_pending_reload(
+                    op="update-routing",
+                    kind="routing",
+                    name=name,
+                    detail=f"~ 更新分流组「{name}」",
+                )
+            except Exception as e:
+                return self.respond_mutation(s, f"更新分流组失败：{e}", False)
+        return self.respond_mutation(s, f"已更新分流组「{name}」，请点顶部「重载配置」生效", True)
 
     def do_save_custom_config(self, s, form):
         if not load_panel_settings().get("custom_server_enabled"):
@@ -4947,7 +5233,7 @@ class Panel(BaseHTTPRequestHandler):
             f"<input id=port name=port placeholder='留空随机端口'>"
             f"<button type=submit>添加入站节点</button></form></section>"
             f"<section><h2>自定义 mihomo 服务端配置</h2>"
-            f"<form method=post action=/config/reset-template>{hid}<button type=submit>恢复标准模板</button></form></section>"
+            f"<form method=post action=/config/reset-template>{hid}<button type=submit>恢复默认服务端模板</button></form></section>"
             f"{cert_sec}</main>"
         )
         return render_spa_html("ClashGate", boot, fallback)

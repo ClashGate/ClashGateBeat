@@ -4,7 +4,7 @@
 # shellcheck source=/dev/null
 . "$(dirname "${BASH_SOURCE[0]}")/i18n.sh"   # CLASHGATE_LANG=en|zh；默认中文
 
-CS_VERSION=1.06
+CS_VERSION=1.07
 REPO_OWNER=${REPO_OWNER:-ClashGate}
 REPO_NAME=${REPO_NAME:-ClashGateBeat}
 REPO_SLUG=${REPO_SLUG:-$REPO_OWNER/$REPO_NAME}
@@ -21,6 +21,11 @@ FRAG_REALITY=$CONF_DIR/listeners.reality.yaml
 FRAG_EXTRA=$CONF_DIR/listeners.extra.yaml    # owned by the panel
 FRAG_PROXIES=$CONF_DIR/proxies.extra.yaml    # outbound proxies owned by the panel
 FRAG_PROVIDERS=$CONF_DIR/providers.extra.yaml # outbound proxy-providers owned by the panel
+FRAG_RULE_PROVIDERS=$CONF_DIR/routing.rule-providers.yaml
+FRAG_PROXY_GROUPS=$CONF_DIR/routing.proxy-groups.yaml
+FRAG_RULES=$CONF_DIR/routing.rules.yaml
+ROUTING_JSON=$CS_ROOT/routing.json
+ROUTING_DIR=$CS_ROOT/routing
 CUSTOM_CONF=$CONF_DIR/custom_config.yaml     # user-supplied full server config (custom mode)
 CLIENT_DIR=$CS_ROOT/client
 UNIT=/etc/systemd/system/mihomo.service

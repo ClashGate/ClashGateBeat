@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "node-select",
+      "name": "Node Select",
+      "file": "node-select.yaml",
+      "deletable": false,
+      "role": "select"
+    },
+    {
+      "id": "ai",
+      "name": "AI",
+      "file": "ai.yaml",
+      "deletable": true,
+      "role": "policy"
+    },
+    {
+      "id": "social-media",
+      "name": "Social Media",
+      "file": "social-media.yaml",
+      "deletable": true,
+      "role": "policy"
+    },
+    {
+      "id": "china",
+      "name": "China",
+      "file": "china.yaml",
+      "deletable": true,
+      "role": "policy"
+    },
+    {
+      "id": "final",
+      "name": "Final",
+      "file": "final.yaml",
+      "deletable": false,
+      "role": "final"
+    }
+  ]
+}
