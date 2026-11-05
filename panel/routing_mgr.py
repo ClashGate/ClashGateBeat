@@ -316,19 +316,6 @@ class RoutingManager:
 
     # ----- assemble fragments -------------------------------------------------
 
-    def china_group_name(self, meta: dict = None) -> str | None:
-        meta = meta or self.load_meta()
-        for g in meta.get("groups") or []:
-            if g.get("id") == "china" or (g.get("role") == ROLE_POLICY and g.get("name") == "China"):
-                return g.get("name")
-            # Also detect by filename for renamed China
-            if g.get("id") == "china":
-                return g.get("name")
-        for g in meta.get("groups") or []:
-            if g.get("id") == "china":
-                return g.get("name")
-        return None
-
     def find_group(self, meta: dict, gid: str) -> dict | None:
         for g in meta.get("groups") or []:
             if g.get("id") == gid:
@@ -385,7 +372,7 @@ class RoutingManager:
         Classical DOMAIN/IP/… rules that target a group's own proxy name are
         written to routing/<id>.rules.yaml and introduced via a file
         rule-provider + RULE-SET (so main config.yaml stays short). Existing
-        HTTP rule-providers (AI / Social / China) and already-written RULE-SET
+        HTTP rule-providers (imported groups) and already-written RULE-SET
         lines are left unchanged.
 
         Edge case: a pasted rule whose target is a *different* proxy group
@@ -767,7 +754,7 @@ class RoutingManager:
         """Beginner import: wrap an external rule-provider URL as a new routing group.
 
         Does NOT download or parse remote YAML (typical rule lists are payload/classical
-        files, not full proxy-groups documents). Mirrors default China/AI groups.
+        files, not full proxy-groups documents).
         """
         del yaml_raw  # intentionally unused; no remote YAML / pasted YAML path
         meta = self.load_meta()

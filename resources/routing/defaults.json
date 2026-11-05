@@ -10,30 +10,6 @@
       "kind": "select"
     },
     {
-      "id": "ai",
-      "name": "AI",
-      "file": "ai.yaml",
-      "deletable": true,
-      "role": "policy",
-      "kind": "external"
-    },
-    {
-      "id": "social-media",
-      "name": "Social Media",
-      "file": "social-media.yaml",
-      "deletable": true,
-      "role": "policy",
-      "kind": "external"
-    },
-    {
-      "id": "china",
-      "name": "China",
-      "file": "china.yaml",
-      "deletable": true,
-      "role": "policy",
-      "kind": "external"
-    },
-    {
       "id": "final",
       "name": "Final",
       "file": "final.yaml",
