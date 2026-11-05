@@ -2889,9 +2889,6 @@ onUnmounted(() => {
                 <h2 class="text-base font-bold text-slate-900 tracking-tight">{{ t('服务端分流') }}</h2>
                 <p class="text-xs text-slate-500 mt-1">{{ t('分流写在独立文件，通过主配置引入。改完点顶部「重载配置」生效。') }}</p>
               </div>
-              <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-sky-50 text-sky-700 border border-sky-200/60 tabular-nums">
-                {{ t('{n} 组', { n: routingGroups.length }) }}
-              </span>
             </div>
             <p v-if="state.routing && state.routing.error" class="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
               {{ state.routing.error || t('自定义模式下分流解析失败') }}
