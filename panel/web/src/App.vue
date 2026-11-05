@@ -3534,11 +3534,11 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <section class="cg-surface rounded-2xl p-5 sm:p-6 space-y-4 lg:col-span-2">
+          <section class="cg-surface rounded-2xl p-5 space-y-3">
             <div>
               <h2 class="text-base font-bold text-slate-900 tracking-tight">{{ t('更新通道') }}</h2>
               <p class="text-xs text-slate-500 mt-1 leading-relaxed max-w-2xl">
-                {{ t('正式通道跟随 ClashGate 主分支；测试通道跟随 test 分支，方便提前体验新功能。默认正式，切换后请点顶部「检查更新」。') }}
+                {{ t('测试版可能不稳定，请谨慎使用。') }}
               </p>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -3561,10 +3561,7 @@ onUnmounted(() => {
                 @click="setUpdateChannel('test')"
               >{{ t('测试') }}</button>
             </div>
-            <p class="text-[11px] text-slate-500 font-mono">
-              ClashGate/ClashGate@{{ state.update_channel === 'test' ? 'test' : 'main' }}
-              <span v-if="state.update_channel === 'test'" class="ml-2 text-amber-700 font-sans font-semibold">{{ t('当前为测试更新通道') }}</span>
-            </p>
+            <p class="text-xs font-semibold" :class="state.update_channel === 'test' ? 'text-amber-700' : 'text-slate-500'">{{ state.update_channel === 'test' ? t('当前为测试通道') : t('当前为正式通道') }}</p>
           </section>
 
           <section class="cg-surface rounded-2xl">
