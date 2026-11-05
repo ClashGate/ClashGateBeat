@@ -398,7 +398,6 @@ class RoutingManager:
         policy_rules: list = []
         final_name = "Final"
         select_name = "Node Select"
-        china_name = None
         generated_payloads: set = set()
 
         for g in meta.get("groups") or []:
@@ -421,8 +420,6 @@ class RoutingManager:
                 final_name = gname
             elif role == ROLE_SELECT:
                 select_name = gname
-            elif g.get("id") == "china":
-                china_name = gname
 
             own_classical: list = []
             passthrough: list = []
@@ -467,8 +464,6 @@ class RoutingManager:
 
         rules = list(BUILTIN_ALWAYS_RULES_HEAD) + policy_rules
         rules.append(BUILTIN_PRIVATE_RULE)
-        if china_name:
-            rules.append(f"GEOIP,cn,{china_name},no-resolve")
         rules.append(f"MATCH,{final_name}")
 
         # Render fragments (with section headers for assemble substitution)
@@ -1045,7 +1040,6 @@ class RoutingManager:
         proxy_groups = []
         policy_rules = []
         final_name = None
-        china_name = None
         for g in groups_payload:
             doc = self.parse_group_doc(g.get("yaml") or "")
             for pname, pcfg in (doc.get("rule-providers") or {}).items():
@@ -1056,8 +1050,6 @@ class RoutingManager:
             name = str((doc.get("proxy-groups") or [{}])[0].get("name") or g.get("name") or "")
             if role == ROLE_FINAL:
                 final_name = name
-            if g.get("id") == "china" or name == "China":
-                china_name = name
             for r in doc.get("rules") or []:
                 if str(r).upper().startswith("MATCH,"):
                     continue
@@ -1066,8 +1058,6 @@ class RoutingManager:
             final_name = str(proxy_groups[-1].get("name") or "Final")
         rules = list(BUILTIN_ALWAYS_RULES_HEAD) + policy_rules
         rules.append(BUILTIN_PRIVATE_RULE)
-        if china_name:
-            rules.append(f"GEOIP,cn,{china_name},no-resolve")
         rules.append(f"MATCH,{final_name or 'Final'}")
 
         rp_block = self._dump_providers_only(providers)
