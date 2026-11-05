@@ -1534,8 +1534,22 @@ async function toggleAutoUpdate() {
   )
 }
 
-async function setUpdateChannel(channel) {
+function setUpdateChannel(channel) {
   const next = channel === 'test' ? 'test' : 'stable'
+  if (next === 'test' && state.update_channel !== 'test') {
+    openConfirmDialog({
+      title: t('切换到测试通道'),
+      message: t('测试版可能不稳定，可能出现功能异常或兼容性问题。确定切换到测试通道？'),
+      confirmText: t('确认切换'),
+      tone: 'amber',
+      onConfirm: () => applyUpdateChannel(next),
+    })
+    return
+  }
+  return applyUpdateChannel(next)
+}
+
+async function applyUpdateChannel(next) {
   // Always POST so legacy Beat installs migrate env to ClashGate/ClashGate@branch even if UI already shows 测试.
   const res = await postAction(
     '/action/settings',
