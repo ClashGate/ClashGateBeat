@@ -1307,6 +1307,27 @@ async function renameRouting(g) {
   await postAction('/routing/rename', { id: g.id, name: trimmed }, `routing-rename-${g.id}`)
 }
 
+const routingProvOpen = ref('')
+const routingProvForm = reactive({ provider: '', url: '', behavior: 'classical', format: 'yaml' })
+
+function toggleRoutingProviders(g) {
+  routingProvOpen.value = routingProvOpen.value === g.id ? '' : g.id
+}
+
+async function addRoutingProvider(g) {
+  if (!routingProvForm.provider.trim() || !routingProvForm.url.trim()) return
+  const res = await postAction('/routing/provider/add', { id: g.id, ...routingProvForm }, 'routing-prov-add')
+  if (res && res.ok) { routingProvForm.provider = ''; routingProvForm.url = '' }
+}
+
+function deleteRoutingProvider(g, p) {
+  showConfirm({
+    title: t('规则集'),
+    message: t('确定删除规则集「{name}」？', { name: p.name }),
+    onConfirm: () => postAction('/routing/provider/delete', { id: g.id, provider: p.name }, `routing-prov-del-${p.name}`),
+  })
+}
+
 const routingDragIdx = ref(-1)
 const routingDragOver = ref(-1)
 
@@ -2707,6 +2728,7 @@ onUnmounted(() => {
                     <div v-if="g.error" class="text-xs text-rose-600 mt-1">{{ g.error }}</div>
                   </div>
                   <div class="flex items-center gap-1.5 flex-wrap">
+                    <button v-if="!state.custom_config_mode" type="button" class="px-2 py-1 rounded-lg text-xs bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200" @click="toggleRoutingProviders(g)">{{ t('规则集') }} ({{ (g.rule_providers || []).length }})</button>
                     <button type="button" class="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200 text-slate-700" @click="renameRouting(g)">{{ t('重命名') }}</button>
                     <button
                       v-if="g.deletable"
@@ -2714,6 +2736,32 @@ onUnmounted(() => {
                       class="px-2 py-1 rounded-lg text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
                       @click="confirmDeleteRouting(g)"
                     >{{ t('删除') }}</button>
+                  </div>
+                </div>
+                <div v-if="routingProvOpen === g.id" class="mt-3 space-y-2 border-t border-slate-100 pt-3" draggable="true" @dragstart.stop.prevent>
+                  <div v-if="!(g.rule_providers || []).length" class="text-xs text-slate-500">{{ t('暂无规则集') }}</div>
+                  <div v-for="p in (g.rule_providers || [])" :key="p.name" class="flex items-center gap-2 text-xs">
+                    <span class="font-semibold text-slate-800">{{ p.name }}</span>
+                    <span class="text-slate-400">{{ p.behavior }}</span>
+                    <span class="text-slate-500 truncate flex-1 min-w-0">{{ p.url }}</span>
+                    <button type="button" class="px-2 py-0.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200" @click="deleteRoutingProvider(g, p)">{{ t('删除') }}</button>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                    <input v-model="routingProvForm.provider" :placeholder="t('规则集名称（英文）')" class="cg-input h-9 px-3 rounded-xl border border-slate-200 text-xs" />
+                    <input v-model="routingProvForm.url" placeholder="https://" class="cg-input sm:col-span-2 h-9 px-3 rounded-xl border border-slate-200 text-xs font-mono" />
+                    <select v-model="routingProvForm.behavior" class="cg-input h-9 px-2 rounded-xl border border-slate-200 text-xs">
+                      <option value="classical">{{ t('混合规则') }}</option>
+                      <option value="domain">{{ t('域名列表') }}</option>
+                      <option value="ipcidr">{{ t('IP 段列表') }}</option>
+                    </select>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <select v-model="routingProvForm.format" class="cg-input h-9 px-2 rounded-xl border border-slate-200 text-xs">
+                      <option value="yaml">YAML</option>
+                      <option value="text">{{ t('文本 (每行一条)') }}</option>
+                      <option value="mrs">MRS</option>
+                    </select>
+                    <button type="button" class="cg-btn-primary px-3 py-1.5 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-prov-add'" @click="addRoutingProvider(g)">{{ t('添加规则集') }}</button>
                   </div>
                 </div>
               </div>

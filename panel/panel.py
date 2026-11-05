@@ -4378,6 +4378,10 @@ class Panel(BaseHTTPRequestHandler):
             return self.do_routing_rename(s, form)
         if path == "/routing/reorder":
             return self.do_routing_reorder(s, form)
+        if path == "/routing/provider/add":
+            return self.do_routing_provider(s, form, add=True)
+        if path == "/routing/provider/delete":
+            return self.do_routing_provider(s, form, add=False)
         if path == "/routing/update":
             return self.do_routing_update(s, form)
         if path == "/config/custom":
@@ -5067,6 +5071,29 @@ class Panel(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.respond_mutation(s, f"重命名分流组失败：{e}", False)
         return self.respond_mutation(s, f"已重命名分流组为「{new_name}」，请点顶部「重载配置」生效", True)
+
+    def do_routing_provider(self, s, form, add: bool):
+        gid = (form.get("id") or "").strip()
+        pname = (form.get("provider") or "").strip()
+        with LOCK:
+            try:
+                if is_custom_config_mode():
+                    raise ValueError("自定义配置模式下请在自定义服务端里修改")
+                _ensure_pending_baseline()
+                if add:
+                    gname = get_routing().add_provider(
+                        gid, pname, form.get("url") or "",
+                        (form.get("behavior") or "classical").strip(),
+                        (form.get("format") or "yaml").strip(),
+                    )
+                    detail = f"+ 分流组「{gname}」添加规则集「{pname}」"
+                else:
+                    gname = get_routing().delete_provider(gid, pname)
+                    detail = f"- 分流组「{gname}」删除规则集「{pname}」"
+                record_pending_reload(op="update-routing", kind="routing", name=gname, detail=detail)
+            except Exception as e:
+                return self.respond_mutation(s, f"修改规则集失败：{e}", False)
+        return self.respond_mutation(s, f"{detail.lstrip('+- ')}，请点顶部「重载配置」生效", True)
 
     def do_routing_reorder(self, s, form):
         raw = (form.get("order") or "").strip()

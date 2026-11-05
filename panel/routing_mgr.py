@@ -474,6 +474,16 @@ class RoutingManager:
                 "deletable": bool(g.get("deletable", True)),
                 "role": g.get("role") or ROLE_POLICY,
                 "rule_providers_count": len(doc.get("rule-providers") or {}),
+                "rule_providers": [
+                    {
+                        "name": str(pn),
+                        "url": str((pc or {}).get("url") or ""),
+                        "behavior": str((pc or {}).get("behavior") or ""),
+                        "format": str((pc or {}).get("format") or "yaml"),
+                        "type": str((pc or {}).get("type") or ""),
+                    }
+                    for pn, pc in (doc.get("rule-providers") or {}).items()
+                ],
                 "rules_count": len(doc.get("rules") or []),
                 "error": err,
             })
@@ -725,6 +735,52 @@ class RoutingManager:
             parts[-2] = new
             return ",".join(parts)
         return str(rule)
+
+    def add_provider(self, gid: str, pname: str, url: str, behavior: str = "classical", fmt: str = "yaml") -> str:
+        import re as _re
+        meta = self.load_meta()
+        g = self.find_group(meta, gid)
+        if not g or g.get("role") in (ROLE_SELECT, ROLE_FINAL):
+            raise ValueError("分流组不存在")
+        pname = (pname or "").strip()
+        if not _re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", pname):
+            raise ValueError("规则集名称只能用英文字母、数字、- _ .")
+        url = (url or "").strip()
+        if not _re.match(r"^https?://", url):
+            raise ValueError("规则集 URL 必须以 http(s):// 开头")
+        if behavior not in ("classical", "domain", "ipcidr"):
+            raise ValueError("规则类型无效")
+        if fmt not in ("yaml", "text", "mrs"):
+            raise ValueError("格式无效")
+        for other in meta["groups"]:
+            odoc = self.parse_group_doc(self.read_group_raw(other["file"]))
+            if pname in (odoc.get("rule-providers") or {}):
+                raise ValueError(f"规则集名称已存在：{pname}")
+        doc = self.parse_group_doc(self.read_group_raw(g["file"]))
+        ext = {"yaml": "yaml", "text": "list", "mrs": "mrs"}[fmt]
+        cfg = {"type": "http", "behavior": behavior, "url": url, "path": f"./ruleset/{pname}.{ext}", "interval": 86400}
+        if fmt != "yaml":
+            cfg["format"] = fmt
+        doc["rule-providers"][pname] = cfg
+        gname = g.get("name") or gid
+        doc["rules"].append(f"RULE-SET,{pname},{gname}")
+        self.write_group_raw(g["file"], self.dump_group_doc(doc))
+        self.regenerate_frags(meta)
+        return gname
+
+    def delete_provider(self, gid: str, pname: str) -> str:
+        meta = self.load_meta()
+        g = self.find_group(meta, gid)
+        if not g or g.get("role") in (ROLE_SELECT, ROLE_FINAL):
+            raise ValueError("分流组不存在")
+        doc = self.parse_group_doc(self.read_group_raw(g["file"]))
+        if pname not in doc["rule-providers"]:
+            raise ValueError("规则集不存在")
+        del doc["rule-providers"][pname]
+        doc["rules"] = [r for r in doc["rules"] if not (r.upper().startswith("RULE-SET,") and r.split(",")[1].strip() == pname)]
+        self.write_group_raw(g["file"], self.dump_group_doc(doc))
+        self.regenerate_frags(meta)
+        return g.get("name") or gid
 
     def reorder_groups(self, order: list) -> None:
         meta = self.load_meta()
