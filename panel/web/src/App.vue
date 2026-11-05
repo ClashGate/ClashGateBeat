@@ -2010,11 +2010,6 @@ onUnmounted(() => {
               {{ state.pending_reload_count }}
             </span>
           </button>
-          <span
-            v-if="state.update_channel === 'test'"
-            class="px-2 py-1 rounded-lg text-[10px] font-bold tracking-wide uppercase bg-amber-100 text-amber-800 border border-amber-200"
-            :title="t('当前为测试更新通道')"
-          >{{ t('测试通道') }}</span>
           <button
             type="button"
             :disabled="busyKey === '/action/check-update' || busyKey === '/action/upgrade-self'"
