@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ClashGate v1.03 - rebuilt admin console for ClashGate (Vue 3 + Tailwind CSS, light green SaaS theme).
+"""ClashGate v1.06 - admin console (Vue 3 + Tailwind CSS).
 
 Stdlib only (Python 3). Serves HTTPS itself with the same certificate
 Mihomo uses (/etc/clashgate/certs); no reverse proxy.
@@ -12,6 +12,7 @@ Subcommands:
 import argparse
 import base64
 import calendar
+import datetime
 import gzip
 import hashlib
 import hmac
@@ -40,7 +41,7 @@ from urllib.parse import parse_qs, urlparse, quote
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from i18n_en import tr as _tr_msg, detect_lang as _detect_lang  # noqa: E402  (0.97 i18n: zh default, en on cookie clashgate_lang=en)
 
-VERSION = "1.03"
+VERSION = "1.06"
 
 # CLASHGATE_ROOT lets the panel run against a fake tree for local testing.
 ROOT = os.environ.get("CLASHGATE_ROOT", "")
@@ -52,6 +53,12 @@ PROVIDERS_JSON = CS_ROOT + "/providers.json"
 PENDING_RELOAD_JSON = CS_ROOT + "/pending_reload.json"
 PENDING_BASELINE_JSON = CS_ROOT + "/pending_baseline.json"
 TRAFFIC_JSON = CS_ROOT + "/traffic.json"
+SESSIONS_JSON = CS_ROOT + "/sessions.json"
+PANEL_SETTINGS = CS_ROOT + "/panel_settings.json"
+MASQUE_JSON = CS_ROOT + "/masque.json"
+MASQUE_NAME = "⛅️ Cloudflare-MASQUE"
+UPDATE_CHECK_JSON = CS_ROOT + "/update_check.json"
+UPDATE_CHECK_INTERVAL = 7 * 24 * 3600
 MIHOMO_DIR = CS_ROOT
 CONF = MIHOMO_DIR + "/config.yaml"
 CUSTOM_CONF = MIHOMO_DIR + "/custom_config.yaml"
@@ -100,11 +107,34 @@ REALITY_SNI_POOL = (
     "www.lovelive-anime.jp",
 )
 PBKDF2_ITER = 600_000
-SESSION_TTL = 12 * 3600
+SESSION_TTL = 7 * 24 * 3600
+_SESSION_LOCK = threading.Lock()
+_MASQUE_LOCK = threading.Lock()
 
 
 def pick_reality_sni() -> str:
     return random.choice(REALITY_SNI_POOL)
+
+
+_SNI_HOST = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
+)
+
+
+def resolve_sni(form: dict) -> str:
+    """Use the SNI typed on the add-node form, or a random built-in domain if blank."""
+    raw = (form.get("sni") or "").strip().lower().rstrip(".")
+    if not raw:
+        return pick_reality_sni()
+    if "://" in raw or "/" in raw:
+        raise ValueError("SNI 无效，请填写域名，或留空从内置域名池随机抽取")
+    if ":" in raw:
+        host, _, port = raw.rpartition(":")
+        if port.isdigit():
+            raw = host
+    if not _SNI_HOST.fullmatch(raw):
+        raise ValueError("SNI 无效，请填写域名，或留空从内置域名池随机抽取")
+    return raw
 
 TYPES = (
     "vless-reality", "shadowsocks", "hysteria2", "snell",
@@ -151,7 +181,7 @@ STR_KEYS = {
     "username", "network", "path", "host", "mode", "plugin", "obfs", "fingerprint",
     "network-name", "network-secret", "state-dir", "control-url", "auth-key", "hostname",
     "key", "aead-method", "table-type", "congestion-controller", "udp-relay-mode",
-    "decryption", "encryption", "ws-path", "grpc-service-name", "transport",
+    "decryption", "encryption", "ws-path", "grpc-service-name", "transport", "uri",
 }
 
 
@@ -1375,7 +1405,7 @@ def build_inbound(kind: str, form: dict, env: dict) -> dict:
     label = name
 
     if kind == "vless-reality":
-        sni = pick_reality_sni()
+        sni = resolve_sni(form)
         priv, pub = reality_keypair()
         uid, sid = str(uuidlib.uuid4()), secrets.token_hex(4)
         dec, enc = vless_x25519_keypair()
@@ -1412,7 +1442,7 @@ def build_inbound(kind: str, form: dict, env: dict) -> dict:
     elif kind == "snell":
         version = 5
         obfs_mode = "tls"
-        obfs_host = pick_reality_sni()
+        obfs_host = resolve_sni(form)
         psk = base64.b64encode(secrets.token_bytes(16)).decode()
         listener = {**base, "type": "snell", "psk": psk, "version": version, "udp": True,
                     "obfs-opts": {"mode": obfs_mode, "host": obfs_host}}
@@ -1511,7 +1541,7 @@ def build_inbound(kind: str, form: dict, env: dict) -> dict:
 
     else:  # shadowquic
         user = (form.get("sq_user") or "user").strip() or "user"
-        jls_host = pick_reality_sni()
+        jls_host = resolve_sni(form)
         jls_addr = f"{jls_host}:443"
         cc = "bbr"
         zero_rtt = True
@@ -1748,7 +1778,7 @@ def assemble_config() -> str:
             elif s == "@@PROXIES@@":
                 out.append(proxies_block)
             elif s == "@@LISTENERS@@":
-                out.append(block)
+                out.append("listeners:\n" + block if block.strip() else "listeners: []\n")
             else:
                 out.append(line)
     return "".join(out)
@@ -1767,6 +1797,332 @@ def atomic_write(path: str, data: str, mode=0o640):
     except (FileNotFoundError, PermissionError):
         pass
     os.replace(tmp, path)
+
+
+def _load_sessions_file() -> dict:
+    now = time.time()
+    try:
+        with open(SESSIONS_JSON) as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for tok, item in raw.items():
+        if not isinstance(tok, str) or not isinstance(item, dict):
+            continue
+        csrf = item.get("csrf")
+        try:
+            exp = float(item.get("exp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(csrf, str) and csrf and exp > now:
+            out[tok] = {"csrf": csrf, "exp": exp}
+    return out
+
+
+def _save_sessions_file(sessions: dict):
+    now = time.time()
+    clean = {}
+    for tok, item in sessions.items():
+        if not isinstance(item, dict):
+            continue
+        csrf = item.get("csrf")
+        try:
+            exp = float(item.get("exp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(csrf, str) and csrf and exp > now:
+            clean[tok] = {"csrf": csrf, "exp": exp}
+    try:
+        atomic_write(SESSIONS_JSON, json.dumps(clean, ensure_ascii=False) + "\n", 0o600)
+    except Exception as e:
+        sys.stderr.write(f"session save failed: {e}\n")
+
+
+def remember_session(tok: str, sess: dict):
+    with _SESSION_LOCK:
+        Panel.sessions[tok] = sess
+        _save_sessions_file(Panel.sessions)
+
+
+def forget_session(tok: str):
+    if not tok:
+        return
+    with _SESSION_LOCK:
+        Panel.sessions.pop(tok, None)
+        _save_sessions_file(Panel.sessions)
+
+
+def load_panel_settings() -> dict:
+    out = {"custom_server_enabled": False, "auto_update": False}
+    try:
+        with open(PANEL_SETTINGS) as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            out["custom_server_enabled"] = bool(raw.get("custom_server_enabled"))
+            out["auto_update"] = bool(raw.get("auto_update"))
+    except Exception:
+        pass
+    return out
+
+
+def save_panel_settings(updates: dict):
+    cur = load_panel_settings()
+    for key in ("custom_server_enabled", "auto_update"):
+        if key in updates:
+            cur[key] = bool(updates[key])
+    atomic_write(
+        PANEL_SETTINGS,
+        json.dumps(cur, indent=2) + "\n",
+        0o600,
+    )
+
+
+def _openssl(args, data=None, timeout=20) -> bytes:
+    proc = subprocess.run(["openssl", *args], input=data, capture_output=True, timeout=timeout)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or b"openssl failed").decode("utf-8", "replace").strip()
+        raise RuntimeError(err[:300] or "openssl failed")
+    return proc.stdout
+
+
+def _x25519_public_b64() -> str:
+    pem = _openssl(["genpkey", "-algorithm", "X25519"])
+    der = _openssl(["pkey", "-pubout", "-outform", "DER"], pem)
+    if len(der) < 32:
+        raise RuntimeError("X25519 公钥生成失败")
+    return base64.b64encode(der[-32:]).decode()
+
+
+def _p256_keypair_b64():
+    pem = _openssl(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256"])
+    sec1 = _openssl(["ec", "-outform", "DER"], pem)
+    pub = _openssl(["pkey", "-pubout", "-outform", "DER"], pem)
+    return base64.b64encode(sec1).decode(), base64.b64encode(pub).decode()
+
+
+def _edge_public_b64(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        raise RuntimeError("注册响应里没有边缘公钥")
+    if "BEGIN" in raw:
+        der = _openssl(["pkey", "-pubin", "-outform", "DER"], raw.encode())
+        return base64.b64encode(der).decode()
+    try:
+        der = base64.b64decode(raw, validate=True)
+    except Exception as e:
+        raise RuntimeError("边缘公钥不是合法的 PEM 或 Base64") from e
+    if not der.startswith(b"\x30"):
+        raise RuntimeError("边缘公钥格式无法识别")
+    return raw
+
+
+def _cf_json(method: str, url: str, body=None, token: str = ""):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "WARP for Android")
+    req.add_header("CF-Client-Version", "a-6.35-4471")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            code, payload = resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        code, payload = e.code, e.read()
+    except Exception as e:
+        raise RuntimeError(f"无法连接 Cloudflare 注册接口：{e}") from e
+    text = payload.decode("utf-8", "replace")
+    if code != 200:
+        raise RuntimeError(f"Cloudflare 注册接口返回 {code}：{text[:400]}")
+    try:
+        parsed = json.loads(text)
+    except ValueError as e:
+        raise RuntimeError("Cloudflare 注册接口返回了无法解析的内容") from e
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Cloudflare 注册接口返回格式异常")
+    return parsed
+
+
+def _host_only(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        return text[1:end] if end > 1 else ""
+    if text.count(":") == 1:
+        host, _, _port = text.partition(":")
+        return host
+    return text
+
+
+def register_cloudflare_masque() -> dict:
+    """Register one Cloudflare WARP device and switch it to MASQUE. Stdlib + openssl."""
+    wg_pub = _x25519_public_b64()
+    priv_b64, _client_pub_b64 = _p256_keypair_b64()
+    client_pub = _client_pub_b64
+    created = _cf_json("POST", "https://api.cloudflareclient.com/v0a4471/reg", {
+        "key": wg_pub,
+        "install_id": "",
+        "fcm_token": "",
+        "tos": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "model": "PC",
+        "serial_number": secrets.token_hex(8),
+        "key_type": "curve25519",
+        "tunnel_type": "wireguard",
+        "locale": "en_US",
+        "warp_enabled": True,
+    })
+    reg_id = str(created.get("id") or "")
+    reg_token = str(created.get("token") or "")
+    if not reg_id or not reg_token:
+        raise RuntimeError("Cloudflare 注册响应缺少设备 id 或 token")
+    enrolled = _cf_json(
+        "PATCH",
+        "https://api.cloudflareclient.com/v0a4471/reg/" + reg_id,
+        {"key": client_pub, "key_type": "secp256r1", "tunnel_type": "masque"},
+        token=reg_token,
+    )
+    config = enrolled.get("config") if isinstance(enrolled.get("config"), dict) else {}
+    peers = config.get("peers") if isinstance(config.get("peers"), list) else []
+    peer = peers[0] if peers and isinstance(peers[0], dict) else {}
+    endpoint = peer.get("endpoint") if isinstance(peer.get("endpoint"), dict) else {}
+    addresses = {}
+    interface = config.get("interface") if isinstance(config.get("interface"), dict) else {}
+    if isinstance(interface.get("addresses"), dict):
+        addresses = interface["addresses"]
+    server = _host_only(str(endpoint.get("v4") or endpoint.get("host") or ""))
+    ports = endpoint.get("ports") if isinstance(endpoint.get("ports"), list) else []
+    port = 443
+    for candidate in ports:
+        try:
+            if int(candidate) == 443:
+                port = 443
+                break
+            port = int(candidate)
+        except (TypeError, ValueError):
+            continue
+    if not server:
+        raise RuntimeError("注册成功但没有返回 MASQUE 接入地址")
+    ipv4 = str(addresses.get("v4") or "").strip()
+    ipv6 = str(addresses.get("v6") or "").strip()
+    if ipv4 and "/" not in ipv4:
+        ipv4 += "/32"
+    if ipv6 and "/" not in ipv6:
+        ipv6 += "/128"
+    if not ipv4:
+        raise RuntimeError("注册成功但没有返回隧道 IPv4")
+    edge_pub = _edge_public_b64(str(peer.get("public_key") or ""))
+    proxy = {
+        "name": MASQUE_NAME,
+        "type": "masque",
+        "server": server,
+        "port": port,
+        "private-key": priv_b64,
+        "public-key": edge_pub,
+        "ip": ipv4,
+        "mtu": 1280,
+        "udp": True,
+        "uri": "https://cloudflareaccess.com",
+        "sni": "consumer-masque.cloudflareclient.com",
+        "network": "quic",
+    }
+    if ipv6:
+        proxy["ipv6"] = ipv6
+    return {
+        "status": "ok",
+        "name": proxy["name"],
+        "endpoint": f"{server}:{port}",
+        "proxy": proxy,
+        "yaml": "- " + json.dumps(proxy, ensure_ascii=False),
+        "error": "",
+        "updated": int(time.time()),
+    }
+
+
+def load_masque_state() -> dict:
+    try:
+        with open(MASQUE_JSON) as f:
+            raw = json.load(f)
+        if isinstance(raw, dict) and raw.get("status") == "ok" and isinstance(raw.get("proxy"), dict):
+            proxy = raw["proxy"]
+            return {
+                "status": "ok",
+                "name": str(raw.get("name") or proxy.get("name") or MASQUE_NAME),
+                "endpoint": str(raw.get("endpoint") or ""),
+                "yaml": str(raw.get("yaml") or ""),
+                "error": "",
+            }
+        if isinstance(raw, dict):
+            return {
+                "status": str(raw.get("status") or "error"),
+                "name": MASQUE_NAME,
+                "endpoint": "",
+                "yaml": "",
+                "error": str(raw.get("error") or ""),
+            }
+    except Exception:
+        pass
+    return {"status": "idle", "name": MASQUE_NAME, "endpoint": "", "yaml": "", "error": ""}
+
+
+def save_masque_state(state: dict):
+    # Credentials stay on disk at 0600. The panel only exposes them to a logged-in admin.
+    atomic_write(MASQUE_JSON, json.dumps(state, ensure_ascii=False) + "\n", 0o600)
+
+
+def _masque_worker():
+    with _MASQUE_LOCK:
+        current = load_masque_state()
+        if current.get("status") == "ok" and current.get("yaml"):
+            return
+        try:
+            save_masque_state({"status": "pending", "name": MASQUE_NAME, "error": "", "updated": int(time.time())})
+            ready = register_cloudflare_masque()
+            save_masque_state(ready)
+            sys.stderr.write(f"cloudflare masque registered: {ready.get('endpoint')}\n")
+        except Exception as e:
+            save_masque_state({
+                "status": "error",
+                "name": MASQUE_NAME,
+                "error": str(e)[:500],
+                "updated": int(time.time()),
+            })
+            sys.stderr.write(f"cloudflare masque registration failed: {e}\n")
+
+
+def start_masque_registrar(force: bool = False):
+    if force:
+        try:
+            os.remove(MASQUE_JSON)
+        except OSError:
+            pass
+    threading.Thread(target=_masque_worker, name="masque-reg", daemon=True).start()
+
+
+def cert_failure_message(out: str, mode: str) -> str:
+    text = out or ""
+    low = text.lower()
+    if ("80 端口被占用" in text or "address already in use" in low or "bind: permission denied" in low
+            or "couldn't bind" in low or "port 80" in low and ("occup" in low or "busy" in low or "in use" in low)):
+        return "重新生成证书失败：80 端口被占用。端口模式需要临时使用 80 端口，请释放该端口，或改用 Cloudflare DNS。"
+    token_bad = mode == "dns" and (
+        "api token" in low or "invalid api" in low or "authentication error" in low
+        or "unauthorized" in low or "error code" in low and "token" in low
+        or "dns 编辑权限" in text or "API Token" in text
+    )
+    if token_bad:
+        tail = " | ".join(line.strip() for line in text.splitlines() if line.strip())[-360:]
+        extra = f"（{tail}）" if tail else ""
+        return "重新生成证书失败：Cloudflare API Token 无效，或没有该域名的 DNS 编辑权限。" + extra
+    tail = " | ".join(line.strip() for line in text.splitlines() if line.strip())[-420:]
+    if not tail:
+        tail = "请检查域名解析、Token 权限或 80 端口是否被占用"
+    return f"重新生成证书失败：{tail}"
 
 
 def validate_config(path=CONF):
@@ -2824,6 +3180,9 @@ def render_subscription(env: dict) -> str:
 
 def mihomo_status() -> dict:
     rc, active = run([SYSTEMCTL, "is-active", "mihomo"])
+    active = (active or "").strip().splitlines()[-1] if active else ""
+    if rc == 127 or active not in STATE_ZH:
+        active = "unknown"
     _, show = run([SYSTEMCTL, "show", "mihomo", "-p", "ActiveEnterTimestamp,MainPID,NRestarts"])
     props = dict(l.split("=", 1) for l in show.splitlines() if "=" in l)
     _, ver = run([resolve_mihomo_bin(), "-v"])
@@ -2834,7 +3193,7 @@ def mihomo_status() -> dict:
         crt_file = (ROOT + CERT) if os.path.isfile(ROOT + CERT) else CERT
         _, c = run(["openssl", "x509", "-noout", "-enddate", "-issuer", "-in", crt_file])
         cert = {"info": c}
-    return {"active": active.strip() or "unknown", "since": props.get("ActiveEnterTimestamp", ""),
+    return {"active": active, "since": props.get("ActiveEnterTimestamp", ""),
             "pid": props.get("MainPID", ""), "restarts": props.get("NRestarts", ""),
             "version": ver.splitlines()[0] if ver else "", "listening": sorted(listening),
             "cert": cert}
@@ -3068,6 +3427,171 @@ def fetch_latest_mihomo_release() -> dict:
     return data
 
 
+def _blank_update_slot(current: str = "") -> dict:
+    return {"checked_at": 0, "current": current, "latest": "", "has_update": False}
+
+
+def load_update_check() -> dict:
+    data = {
+        "core": _blank_update_slot(),
+        "panel": _blank_update_slot(VERSION),
+        "auto_applied_at": 0,
+    }
+    try:
+        with open(UPDATE_CHECK_JSON) as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            for key in ("core", "panel"):
+                slot = raw.get(key)
+                if isinstance(slot, dict):
+                    data[key].update({
+                        "checked_at": int(slot.get("checked_at") or 0),
+                        "current": str(slot.get("current") or data[key]["current"]),
+                        "latest": str(slot.get("latest") or ""),
+                        "has_update": bool(slot.get("has_update")),
+                    })
+            try:
+                data["auto_applied_at"] = int(raw.get("auto_applied_at") or 0)
+            except (TypeError, ValueError):
+                data["auto_applied_at"] = 0
+    except Exception:
+        pass
+    return data
+
+
+def save_update_check(data: dict):
+    atomic_write(UPDATE_CHECK_JSON, json.dumps(data, ensure_ascii=False, indent=2) + "\n", 0o600)
+
+
+def public_update_check() -> dict:
+    data = load_update_check()
+    out = {}
+    for key in ("core", "panel"):
+        slot = data[key]
+        out[key] = {
+            "checked_at": int(slot.get("checked_at") or 0),
+            "current": str(slot.get("current") or ""),
+            "latest": str(slot.get("latest") or "").lstrip("vV"),
+            "has_update": bool(slot.get("has_update")),
+        }
+    return out
+
+
+def _update_due(slot: dict) -> bool:
+    try:
+        ts = float(slot.get("checked_at") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    return time.time() - ts >= UPDATE_CHECK_INTERVAL
+
+
+def record_core_check(current: str, latest: str, has_update: bool):
+    data = load_update_check()
+    data["core"] = {
+        "checked_at": int(time.time()),
+        "current": (current or "").lstrip("vV"),
+        "latest": (latest or "").lstrip("vV"),
+        "has_update": bool(has_update),
+    }
+    save_update_check(data)
+
+
+def record_panel_check(latest: str, has_update: bool):
+    data = load_update_check()
+    data["panel"] = {
+        "checked_at": int(time.time()),
+        "current": VERSION,
+        "latest": (latest or "").lstrip("vV"),
+        "has_update": bool(has_update),
+    }
+    save_update_check(data)
+
+
+def _check_due_updates():
+    data = load_update_check()
+    if _update_due(data["core"]):
+        current = get_local_mihomo_version().lstrip("vV")
+        try:
+            rel = fetch_latest_mihomo_release()
+            latest = str(rel.get("tag_name") or "").lstrip("vV")
+            has = bool(current and latest and parse_version_tuple(latest) > parse_version_tuple(current))
+            record_core_check(current, latest, has)
+        except Exception as e:
+            sys.stderr.write(f"mihomo version check failed: {e}\n")
+    if _update_due(data["panel"]):
+        try:
+            latest = fetch_latest_clashgate_version().lstrip("vV")
+            has = parse_version_tuple(latest) > parse_version_tuple(VERSION)
+            record_panel_check(latest, has)
+        except Exception as e:
+            sys.stderr.write(f"clashgate version check failed: {e}\n")
+
+
+def _apply_auto_update():
+    """When enabled, upgrade the panel once a week. `clashgate update` also upgrades Mihomo."""
+    if not load_panel_settings().get("auto_update"):
+        return
+    data = load_update_check()
+    try:
+        last = float(data.get("auto_applied_at") or 0)
+    except (TypeError, ValueError):
+        last = 0
+    if time.time() - last < UPDATE_CHECK_INTERVAL:
+        return
+    core_has = False
+    panel_has = False
+    try:
+        current = get_local_mihomo_version().lstrip("vV")
+        rel = fetch_latest_mihomo_release()
+        latest = str(rel.get("tag_name") or "").lstrip("vV")
+        core_has = bool(current and latest and parse_version_tuple(latest) > parse_version_tuple(current))
+        record_core_check(current, latest, core_has)
+    except Exception as e:
+        sys.stderr.write(f"auto update core check failed: {e}\n")
+        core_has = bool(load_update_check()["core"].get("has_update"))
+    try:
+        latest_cs = fetch_latest_clashgate_version().lstrip("vV")
+        panel_has = parse_version_tuple(latest_cs) > parse_version_tuple(VERSION)
+        record_panel_check(latest_cs, panel_has)
+    except Exception as e:
+        sys.stderr.write(f"auto update panel check failed: {e}\n")
+        panel_has = bool(load_update_check()["panel"].get("has_update"))
+    data = load_update_check()
+    if not core_has and not panel_has:
+        data["auto_applied_at"] = int(time.time())
+        save_update_check(data)
+        return
+    cmd_bin = CLASHGATE_BIN if os.path.isfile(CLASHGATE_BIN) else "/usr/local/bin/clashgate"
+    if not os.path.isfile(cmd_bin):
+        sys.stderr.write("auto update skipped: clashgate command not installed\n")
+        data["auto_applied_at"] = int(time.time())
+        save_update_check(data)
+        return
+    rc, out = run(["bash", cmd_bin, "update"], timeout=180)
+    data = load_update_check()
+    data["auto_applied_at"] = int(time.time())
+    save_update_check(data)
+    if rc != 0:
+        tail = " | ".join(l for l in (out or "").splitlines() if l.strip())[-300:]
+        sys.stderr.write(f"auto update failed: {tail}\n")
+        return
+    record_panel_check(VERSION, False)
+    sys.stderr.write("auto update applied: panel and mihomo core\n")
+
+
+def start_weekly_update_check():
+    """Check versions weekly. If auto-update is on, apply a panel+core upgrade once a week."""
+    def _loop():
+        while True:
+            try:
+                _check_due_updates()
+                _apply_auto_update()
+            except Exception as e:
+                sys.stderr.write(f"weekly update check failed: {e}\n")
+            time.sleep(3600)
+    threading.Thread(target=_loop, name="update-check", daemon=True).start()
+
+
 _CORE_UPDATE_TASK_LOCK = threading.Lock()
 _CORE_UPDATE_TASK = {
     "running": False,
@@ -3085,6 +3609,7 @@ def update_mihomo_core_direct() -> tuple:
     rel = fetch_latest_mihomo_release()
     latest_tag = str(rel.get("tag_name") or "").strip()
     if local_ver and local_ver.strip().lstrip("vV") == latest_tag.lstrip("vV"):
+        record_core_check(local_ver, latest_tag, False)
         return False, local_ver, latest_tag, f"已是最新版本 {latest_tag}，无需更新"
     arch = detect_cpu_arch()
     asset_name = f"mihomo-linux-{arch}-{latest_tag}.gz"
@@ -3148,6 +3673,7 @@ def update_mihomo_core_direct() -> tuple:
         msg = f"Mihomo 内核已从 {local_ver} 更新至 {latest_tag} 并重启生效。"
     else:
         msg = f"Mihomo 内核已更新至 {latest_tag} 并重启生效。"
+    record_core_check(latest_tag, latest_tag, False)
     return changed, local_ver, latest_tag, msg
 
 
@@ -3231,17 +3757,20 @@ def render_spa_html(title: str, boot_data: dict, fallback_html: str = "") -> str
     css = load_dist_asset("assets/style.css")
     js = load_dist_asset("assets/app.js")
     boot_json = json.dumps(boot_data, ensure_ascii=False).replace("</", "<\\/")
+    noscript = f"<noscript>{fallback_html}</noscript>" if fallback_html else ""
     return (
         "<!doctype html><html lang=zh-CN><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>{html.escape(title)}</title>"
         "<link rel=icon type=image/png href=/favicon.png><link rel='shortcut icon' href=/favicon.ico>"
+        "<style>html{background:#f3f6fb}html:not(.cg-ready) #app{visibility:hidden}</style>"
         f"<style>{css}</style>"
         f"<script>window.__CS_BOOT__ = {boot_json};</script>"
         "</head>"
-        "<body class='bg-[#f6faf8] text-slate-900 antialiased'>"
-        f"<div id=app>{fallback_html}</div>"
-        f"<script type=module>{js}</script>"
+        "<body class='antialiased'>"
+        "<div id=app></div>"
+        f"{noscript}"
+        f"<script>{js}</script>"
         "</body></html>"
     )
 
@@ -3303,11 +3832,11 @@ class Panel(BaseHTTPRequestHandler):
         return _tr_msg(msg, self.lang())
 
     def send(self, code, body, ctype="text/html; charset=utf-8", headers=None):
-        if ctype.startswith("application/json") and isinstance(body, str) and self.lang() == "en":
+        if ctype.startswith("application/json") and isinstance(body, str) and self.lang() in ("en", "ru", "fa"):
             try:
                 obj = json.loads(body)
                 if isinstance(obj, dict) and isinstance(obj.get("msg"), str):
-                    obj["msg"] = _tr_msg(obj["msg"], "en")
+                    obj["msg"] = _tr_msg(obj["msg"], self.lang())
                     body = json.dumps(obj, ensure_ascii=False)
             except ValueError:
                 pass
@@ -3448,8 +3977,8 @@ class Panel(BaseHTTPRequestHandler):
         localized_pending_items = []
         for it in pending_items:
             entry = dict(it)
-            if req_lang == "en" and isinstance(entry.get("detail"), str):
-                entry["detail"] = _tr_msg(entry["detail"], "en")
+            if req_lang in ("en", "ru", "fa") and isinstance(entry.get("detail"), str):
+                entry["detail"] = _tr_msg(entry["detail"], req_lang)
             localized_pending_items.append(entry)
         has_certs = certs_present()
         install_mode = env.get("MODE") or ("auto-cert" if (has_certs or env.get("DOMAIN") or env.get("CERT_MODE")) else "no-cert")
@@ -3481,7 +4010,11 @@ class Panel(BaseHTTPRequestHandler):
             "cert_days": cert_days,
             "cert_hours": cert_hours,
             "custom_config_mode": custom_active,
+            "custom_server_enabled": bool(load_panel_settings().get("custom_server_enabled")),
+            "auto_update": bool(load_panel_settings().get("auto_update")),
             "custom_config_raw": cur_cfg,
+            "masque": load_masque_state(),
+            "update_check": public_update_check(),
             "pending_reload_count": len(localized_pending_items),
             "pending_reload_items": localized_pending_items,
             "status": {
@@ -3541,12 +4074,15 @@ class Panel(BaseHTTPRequestHandler):
         self.send(code, render_spa_html(title, {"page": "error", "version": VERSION}, body))
 
     def session(self):
+        now = time.time()
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
             if k == "cs_session":
                 s = self.sessions.get(v)
-                if s and s["exp"] > time.time():
+                if s and s["exp"] > now:
                     return v, s
+        if os.environ.get("CLASHGATE_PREVIEW") == "1":
+            return "preview", {"csrf": "preview", "exp": now + SESSION_TTL}
         return None, None
 
     def form(self):
@@ -3579,7 +4115,9 @@ class Panel(BaseHTTPRequestHandler):
                 if os.path.isfile(fp):
                     ctype = "application/javascript; charset=utf-8" if fp.endswith(".js") else (
                         "text/css; charset=utf-8" if fp.endswith(".css") else (
-                            "image/png" if fp.endswith(".png") else "application/octet-stream")
+                            "image/png" if fp.endswith(".png") else (
+                                "font/woff2" if fp.endswith(".woff2") else (
+                                    "font/woff" if fp.endswith(".woff") else "application/octet-stream")))
                     )
                     with open(fp, "rb") as f:
                         return self.send(200, f.read(), ctype)
@@ -3608,6 +4146,8 @@ class Panel(BaseHTTPRequestHandler):
             return self.send(200, self.dashboard(s, initial_tab="advanced"))
         if path in ("/certs", "/cert"):
             return self.send(200, self.dashboard(s, initial_tab="certs"))
+        if path == "/settings":
+            return self.send(200, self.dashboard(s, initial_tab="settings"))
         if path == "/api/state":
             return self.send(200, json.dumps(self.build_client_state(s), ensure_ascii=False), "application/json; charset=utf-8")
         if path == "/api/update-core-status":
@@ -3671,14 +4211,18 @@ class Panel(BaseHTTPRequestHandler):
                 return self.send(403, json.dumps({"ok": False, "msg": "会话校验失败，请刷新页面重试"}), "application/json; charset=utf-8")
             return self.simple(403, "会话校验失败", "页面已过期，请刷新后重试。")
         if path == "/logout":
-            self.sessions.pop(tok, None)
-            return self.redirect("/login", "cs_session=; Max-Age=0; Path=/")
+            forget_session(tok)
+            return self.redirect("/login", "cs_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict")
         if path in ("/action/restart", "/action/reload"):
             return self.do_action(s, path.rsplit("/", 1)[1])
         if path == "/action/discard-pending":
             return self.do_discard_pending(s)
         if path == "/action/change-password":
             return self.do_change_password(s, form)
+        if path == "/action/settings":
+            return self.do_settings(s, form)
+        if path == "/action/masque-register":
+            return self.do_masque_register(s)
         if path == "/action/update-core":
             return self.do_update_core(s, form)
         if path == "/action/check-update":
@@ -3781,7 +4325,8 @@ class Panel(BaseHTTPRequestHandler):
         if hmac.compare_digest(user, self.cfg["username"]) and verify_password(pw, self.cfg["password_hash"]):
             self.fails.pop(ip, None)
             tok = secrets.token_urlsafe(32)
-            self.sessions[tok] = {"csrf": secrets.token_urlsafe(24), "exp": now + SESSION_TTL}
+            sess = {"csrf": secrets.token_urlsafe(24), "exp": now + SESSION_TTL}
+            remember_session(tok, sess)
             cookie = f"cs_session={tok}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
             if self.is_https():
                 cookie += "; Secure"
@@ -3797,6 +4342,33 @@ class Panel(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.respond_mutation(s, f"丢弃草稿失败：{e}", False)
         return self.respond_mutation(s, "已丢弃待重载草稿", True)
+
+    def do_settings(self, s, form):
+        updates = {}
+        for key in ("custom_server_enabled", "auto_update"):
+            if key not in form:
+                continue
+            raw = (form.get(key) or "").strip().lower()
+            if raw not in ("0", "1", "false", "true", "on", "off"):
+                return self.respond_mutation(s, "设置项无效", False)
+            updates[key] = raw in ("1", "true", "on")
+        if not updates:
+            return self.respond_mutation(s, "设置项无效", False)
+        with LOCK:
+            save_panel_settings(updates)
+        if "auto_update" in updates and len(updates) == 1:
+            if updates["auto_update"]:
+                return self.respond_mutation(s, "已开启每周自动更新。更新面板时会同时更新 Mihomo 内核。", True)
+            return self.respond_mutation(s, "已关闭每周自动更新。", True)
+        if updates.get("custom_server_enabled"):
+            return self.respond_mutation(s, "已开启自定义服务端。", True)
+        if "custom_server_enabled" in updates:
+            return self.respond_mutation(s, "已关闭自定义服务端。", True)
+        return self.respond_mutation(s, "设置已保存。", True)
+
+    def do_masque_register(self, s):
+        start_masque_registrar(force=True)
+        return self.respond_mutation(s, "正在向 Cloudflare 注册 MASQUE，完成后点「加入出站节点」。", True)
 
     def do_change_password(self, s, form):
         cur_pw = form.get("current_password", "")
@@ -3942,27 +4514,32 @@ class Panel(BaseHTTPRequestHandler):
         mode = (form.get("cert_mode") or "dns").strip()
         if mode not in ("dns", "port"):
             return self.respond_mutation(s, "不支持的证书模式", False)
-        raw_token = form.get("cf_token") if "cf_token" in form else form.get("token", "")
+        raw_token = (form.get("cf_token") if "cf_token" in form else form.get("token", "")).strip()
         if mode == "dns":
             if not raw_token:
                 return self.respond_mutation(s, "请输入 Cloudflare API Token", False)
             if re.search(r'[\s"\'`$\\]', raw_token):
                 return self.respond_mutation(s, "API Token 不能包含空格或引号", False)
         with LOCK:
+            env = read_env()
+            prev_mode = (env.get("CERT_MODE") or "port").strip()
+            prev_token = env.get("CF_TOKEN", "")
+            if mode == prev_mode and (mode != "dns" or raw_token == prev_token):
+                return self.respond_mutation(s, "未切换证书模式，未重新生成证书。", False)
             if mode == "dns":
                 write_env_var("CERT_MODE", "dns")
                 write_env_var("CF_TOKEN", raw_token)
             else:
                 write_env_var("CERT_MODE", "port")
-            rc, out = run([resolve_certctl_path(), "renew"], timeout=180)
+            rc, out = run([resolve_certctl_path(), "reissue"], timeout=180)
             if raw_token:
                 out = out.replace(raw_token, "***")
-        if rc == 0:
-            if mode == "dns":
-                return self.respond_mutation(s, "已切换为 Cloudflare DNS 续证模式，证书申请 / 续期完成。", True)
-            return self.respond_mutation(s, "已切换为端口续证模式，证书检查 / 续期完成。", True)
-        tail = " | ".join(l for l in out.splitlines() if l.strip())[-300:]
-        return self.respond_mutation(s, f"证书申请 / 续期失败：{tail}", False)
+            if rc != 0:
+                write_env_var("CERT_MODE", prev_mode or "port")
+                if prev_mode == "dns" and prev_token:
+                    write_env_var("CF_TOKEN", prev_token)
+                return self.respond_mutation(s, cert_failure_message(out, mode), False)
+        return self.respond_mutation(s, "已切换并重新生成证书。", True)
 
     def do_update_core(self, s, form=None):
         if form and form.get("async") == "1" and self.is_ajax():
@@ -3984,6 +4561,7 @@ class Panel(BaseHTTPRequestHandler):
             latest_cs = fetch_latest_clashgate_version()
             cur_cs = VERSION
             has_update = parse_version_tuple(latest_cs) > parse_version_tuple(cur_cs)
+            record_panel_check(latest_cs, has_update)
             if has_update:
                 msg = f"发现新版本 v{latest_cs}（当前 v{cur_cs}）"
             else:
@@ -4014,6 +4592,7 @@ class Panel(BaseHTTPRequestHandler):
             if rc != 0:
                 tail = " | ".join(l for l in out.splitlines() if l.strip())[-300:]
                 return self.respond_mutation(s, f"升级失败：{tail}", False)
+            record_panel_check(VERSION, False)
         return self.respond_mutation(s, "升级成功！ClashGate 与 Mihomo 内核已更新至最新版本。", True)
 
     def do_add(self, s, form):
@@ -4257,6 +4836,8 @@ class Panel(BaseHTTPRequestHandler):
         return self.respond_mutation(s, f"已删除订阅源「{name}」，请点顶部「重载配置」生效", True)
 
     def do_save_custom_config(self, s, form):
+        if not load_panel_settings().get("custom_server_enabled"):
+            return self.respond_mutation(s, "高级功能请到设置页开启", False)
         raw = form.get("custom_config_raw", "")
         auto_fix = form.get("auto_fix_certs") == "1"
         with LOCK:
@@ -4271,6 +4852,8 @@ class Panel(BaseHTTPRequestHandler):
         return self.respond_mutation(s, "自定义 mihomo 服务端配置已通过校验并应用生效。", True)
 
     def do_reset_template_config(self, s):
+        if not load_panel_settings().get("custom_server_enabled"):
+            return self.respond_mutation(s, "高级功能请到设置页开启", False)
         with LOCK:
             try:
                 reset_to_template_config()
@@ -4299,7 +4882,7 @@ class Panel(BaseHTTPRequestHandler):
         q = parse_qs(urlparse(self.path).query)
         msg, ok = q.get("msg", [""])[0], q.get("ok", ["1"])[0] == "1"
         tab_q = q.get("tab", [""])[0]
-        if tab_q in ("inbounds", "outbounds", "readable", "advanced", "certs"):
+        if tab_q in ("inbounds", "outbounds", "readable", "advanced", "certs", "settings"):
             initial_tab = tab_q
         env = read_env()
         st = mihomo_status()
@@ -4344,11 +4927,10 @@ class Panel(BaseHTTPRequestHandler):
             f"<span>{e(state.get('cert_mode') or 'port')}</span>"
             f"<span>{e(state.get('cert_issuer') or '—')}</span>"
             f"<span>{e(state.get('cert_expires') or '—')}</span></div>"
-            f"<form method=post action=/action/cert>{hid}<button type=submit>立即检查 / 续期</button></form>"
             f"<form method=post action=/action/cert-mode>{hid}"
             f"<input type=hidden name=cert_mode value=dns>"
             f"<input id=cf-token name=cf_token type=password placeholder='Cloudflare API Token'>"
-            f"<button type=submit>切换并续证</button></form>"
+            f"<button type=submit>切换并重新生成证书</button></form>"
             f"<a href='https://dash.cloudflare.com/profile/api-tokens' target=_blank rel=noopener>https://dash.cloudflare.com/profile/api-tokens</a>"
             f"</section>"
         )
@@ -4429,7 +5011,9 @@ def serve(cfg_path):
         cfg = json.load(f)
     Panel.cfg = cfg
     Panel.cfg_path = cfg_path
+    Panel.sessions = _load_sessions_file()
     start_traffic_poller(30)
+    start_weekly_update_check()
     addr = (cfg.get("listen", "0.0.0.0"), int(cfg.get("port", 8443)))
     if cfg.get("tls_cert"):
         cert_p = ROOT + cfg["tls_cert"]

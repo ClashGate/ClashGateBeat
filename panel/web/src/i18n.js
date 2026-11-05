@@ -1,5 +1,7 @@
 // ClashGate panel i18n: default zh; choice kept in localStorage + cookie (cookie lets the server localize API messages).
 import { ref } from 'vue'
+import localesRu from './locales/ru.json'
+import localesFa from './locales/fa.json'
 
 const KEY = 'clashgate_lang'
 export const EN = {
@@ -33,9 +35,17 @@ export const EN = {
  "升级中…": "Upgrading…",
  "检查中…": "Checking…",
  "检查更新": "Check for updates",
+ "有新版本": "Update available",
+ "有新版本 {v}": "New version {v}",
  "退出": "Log out",
  "运行状态": "Status",
  "未知": "Unknown",
+ "正在检查版本…": "Checking versions…",
+ "版本检查失败": "Version check failed",
+ "Mihomo 内核": "Mihomo core",
+ "面板": "Panel",
+ "当前": "Current",
+ "最新": "Latest",
  "自定义模式": "Custom mode",
  "标准模板": "Standard template",
  "入站监听": "Inbound listeners",
@@ -63,7 +73,7 @@ export const EN = {
  "易读配置转换": "Readable config converter",
  "自定义服务端配置": "Custom server config",
  "Zashboard 控制面板": "Zashboard dashboard",
- "端口 :": "Port :",
+ "端口": "Port",
  "运行中": "Running",
  "未运行": "Not running",
  "启动中": "Starting",
@@ -74,7 +84,7 @@ export const EN = {
  "打开 Zashboard": "Open Zashboard",
  "已复制地址": "URL copied",
  "复制地址": "Copy URL",
- "查看Mihomo服务端配置": "View Mihomo server config",
+ "查看 Mihomo 服务端配置": "View Mihomo server config",
  "免填密钥直连地址 (HTTPS)": "Direct URL with secret prefilled (HTTPS)",
  "API 密钥 (Secret)：": "API secret:",
  "已复制": "Copied",
@@ -98,13 +108,15 @@ export const EN = {
  "更换中…": "Changing…",
  "更换订阅链接": "Change subscription link",
  "预览": "Preview",
+ "查看配置": "View config",
+ "修改": "Change",
  "导入 Clash / Mihomo 客户端即可使用": "Import into a Clash / Mihomo client to use",
  "本地客户端备份：": "Local client backup:",
- "前往易读配置转换 →": "Go to readable config converter →",
  "入站节点": "Inbound nodes",
  "已复制全部": "All copied",
  "复制全部配置": "Copy all configs",
  "暂无入站节点，请在右侧添加节点": "No inbound nodes yet; add one on the right",
+ "暂无入站节点，请在上方添加节点": "No inbound nodes yet. Add one above.",
  "重载配置生效": "Applies on reload",
  "删除": "Delete",
  "添加节点": "Add node",
@@ -147,8 +159,8 @@ export const EN = {
  "复制转换结果": "Copy result",
  "点击「转换为易读配置」后在此显示多行 YAML 结果…": "After clicking “Convert to readable config”, the multi-line YAML result appears here…",
  "自定义 mihomo 服务端配置": "Custom mihomo server config",
- "当前：自定义配置模式": "Current: custom config mode",
- "当前：标准模板模式": "Current: standard template mode",
+ "当前：自定义配置": "Current: custom config",
+ "当前：标准模板": "Current: standard template",
  "您可以直接粘贴或编辑整份自备的 mihomo 服务端配置文件（": "You can paste or edit a complete mihomo server config file of your own (",
  "），校验通过后立即应用，并自动同步刷新入站 Listeners 列表与客户端订阅。普通用户无需修改此页。": "). It is applied right after validation, and the inbound Listeners list and client subscription are refreshed automatically. Most users do not need to change this page.",
  "正在恢复默认配置…": "Restoring default config…",
@@ -183,7 +195,10 @@ export const EN = {
  "复制配置": "Copy config",
  "重置密码": "Reset password",
  "免证书的新一代协议": "Next-generation certificate-free protocol",
- "已锁定安全默认：默认启用 VLESS Encryption (vless-x25519)，SNI 从内置域名池随机抽取": "Secure defaults locked: VLESS Encryption (vless-x25519) enabled by default; SNI randomly picked from the built-in domain pool",
+ "已锁定安全默认：默认启用 VLESS Encryption (vless-x25519)。SNI 可自填，留空从内置域名池随机抽取": "Secure defaults locked: VLESS Encryption (vless-x25519) is on. SNI is optional; leave it blank to pick a random domain from the built-in pool",
+ "已锁定安全默认：混淆模式固定为 tls。伪装 Host 可自填，留空从内置域名池随机抽取": "Secure defaults locked: obfuscation mode is fixed to tls. Camouflage host is optional; leave it blank to pick a random domain from the built-in pool",
+ "已锁定安全默认：伪装地址 (JLS) 可自填，留空从内置域名池随机抽取，拥塞控制默认 bbr": "Secure defaults locked: camouflage address (JLS) is optional; leave it blank to pick a random domain from the built-in pool. Congestion control defaults to bbr",
+ "留空从内置域名池随机抽取": "Leave blank to pick a random domain from the built-in pool",
  "新一代 UDP 协议": "Next-generation UDP protocol",
  "已锁定安全默认：混淆密码 (Salamander) 默认随机生成，不可手动关闭": "Secure defaults locked: obfuscation password (Salamander) generated randomly and cannot be disabled",
  "经典轻量级加密协议，默认锁定 aes-256-gcm": "Classic lightweight encrypted protocol, locked to aes-256-gcm by default",
@@ -213,6 +228,7 @@ export const EN = {
  "已丢弃待重载草稿": "Discarded pending draft",
  "修改密码": "Change password",
  "修改面板密码": "Change panel password",
+ "更新当前登录密码。": "Update the current sign-in password.",
  "更新管理员账号 admin 的登录密码，修改后当前会话保持有效。": "Update the login password for admin. Your current session will remain active.",
  "当前密码": "Current password",
  "新密码": "New password",
@@ -245,17 +261,13 @@ export const EN = {
  "临时自签证书": "Temporary self-signed",
  "未检测到证书": "No certificate",
  "天": "days",
- "立即检查 / 续期": "Check / renew now",
  "检查续期中…": "Checking / renewing…",
  "当前为无证书模式或未检测到证书文件（/etc/clashgate/certs/fullchain.pem）。如需启用自动证书，可在下方配置 Cloudflare DNS 模式并申请证书。": "Currently in no-certificate mode or no certificate file was found (/etc/clashgate/certs/fullchain.pem). To enable automatic certificates, configure Cloudflare DNS mode below and request a certificate.",
- "当前为手动证书模式。手动证书请直接替换 /etc/clashgate/certs/ 下的 fullchain.pem 与 privkey.pem 文件，然后点击右上角「立即检查 / 续期」校验证书。": "Currently in manual certificate mode. To update a manual certificate, replace fullchain.pem and privkey.pem in /etc/clashgate/certs/, then click “Check / renew now” at the top right to validate.",
  "立即生效，无需点击顶栏重载配置。保存后将立即调用 acme.sh 申请或续期证书。": "Takes effect immediately without reloading config. Saving will invoke acme.sh right away to issue or renew the certificate.",
  "目标续证模式": "Target renewal mode",
  "Cloudflare DNS（推荐，免 80 端口）": "Cloudflare DNS (recommended, no port 80 needed)",
  "Cloudflare API Token": "Cloudflare API Token",
  "请输入或粘贴具备 Zone.DNS 编辑权限的 Cloudflare API Token": "Enter or paste a Cloudflare API Token with Zone.DNS edit permission",
- "切换并续证": "Switch & renew",
- "正在切换并续证…": "Switching & renewing…",
  "请输入 Cloudflare API Token": "Enter the Cloudflare API Token",
  "API Token 不能包含空格或引号": "The API Token must not contain spaces or quotes",
  "已切换为 Cloudflare DNS 续证模式，证书申请 / 续期完成。": "Switched to Cloudflare DNS renewal mode; certificate request / renewal finished.",
@@ -268,18 +280,82 @@ export const EN = {
  "，选择模板": ", choose the",
  "，或自定义权限：": "template, or set custom permissions:",
  "选择当前面板域名所在 Zone（或具体域名）": "Select the Zone for this panel's domain (or the specific domain)",
- "创建后复制生成的 Token，粘贴到左侧输入框并点击「切换并续证」（Token 仅显示一次，请妥善保存）。": "Copy the generated Token, paste it into the input on the left, and click “Switch & renew” (the Token is shown only once; store it safely).",
- "DNS 模式不需要占用 80 端口，也不要求灰云（可开启橙云代理）；Token 仅保存在本机": "DNS mode does not require port 80 and does not require grey cloud (orange cloud proxy works); the Token is stored only on this host in"
+ "DNS 模式不需要占用 80 端口，也不要求灰云（可开启橙云代理）；Token 仅保存在本机": "DNS mode does not require port 80 and does not require grey cloud (orange cloud proxy works); the Token is stored only on this host in",
+ "首页": "Home",
+ "节点转换": "Node converter",
+ "自定义服务端": "Custom server",
+ "设置": "Settings",
+ "简单安全的mihomo服务端": "A simple, safe Mihomo server",
+ "导航": "Navigate",
+ "采用 Mihomo 核心，简单安全。": "Mihomo core. Simple and safe.",
+ "高级功能请到设置页开启": "This is an advanced feature. Enable it on the Settings page.",
+ "切换并重新生成证书": "Switch and regenerate certificate",
+ "正在重新生成证书…": "Regenerating certificate…",
+ "只有和当前模式不同时才能点击。切换后会立刻重新生成证书，Token 错误或 80 端口被占用会返回具体原因。": "The button stays disabled until the mode actually changes. Switching regenerates the certificate immediately. A bad token or port 80 already in use is reported back.",
+ "当前为手动证书模式。手动证书请直接替换 /etc/clashgate/certs/ 下的 fullchain.pem 与 privkey.pem 文件。": "Manual certificate mode. Replace fullchain.pem and privkey.pem in /etc/clashgate/certs/.",
+ "创建后复制生成的 Token，粘贴到左侧输入框。模式与当前不同时，按钮才会亮起，点击后切换并重新生成证书（Token 只显示一次）。": "Copy the Token into the field on the left. The button lights up only when the mode differs from the current one, then switches and regenerates the certificate. The Token is shown once.",
+ "），校验通过后立即生效。普通用户无需修改此页。": "). It takes effect right after validation. Most users do not need this page.",
+ "Cloudflare MASQUE": "Cloudflare MASQUE",
+ "通过Cloudflare注册MASQUE节点。": "Register a MASQUE node through Cloudflare.",
+ "注册 MASQUE": "Register MASQUE",
+ "已就绪": "Ready",
+ "注册失败": "Registration failed",
+ "后台注册中": "Registering",
+ "加入出站节点": "Add to outbound nodes",
+ "重新注册": "Register again",
+ "注册中…": "Registering…",
+ "正在向 Cloudflare 注册，完成后这里会出现「加入出站节点」。": "Registering with Cloudflare. “Add to outbound nodes” will show up here when it finishes.",
+ "默认关闭。关闭时侧栏为灰色，点击只会提示到这里开启。打开后才能编辑整份 mihomo 配置。": "Off by default. While off, the sidebar item is gray and only tells you to enable it here. Turn it on to edit the full mihomo config.",
+ "已开启": "On",
+ "已关闭": "Off",
+ "升级完成，登录状态已保持。": "Upgrade finished. You are still signed in.",
+ "导航": "Menu",
+ "高级功能，打开后可自由编辑 mihomo 服务端配置。": "Advanced. Turn it on to edit the mihomo server config freely.",
+ "自动更新": "Automatic updates",
+ "打开后每周自动更新面板。更新面板时会同时更新 Mihomo 内核。": "When on, the panel updates once a week. Updating the panel also updates the Mihomo core.",
+ "请勿重复加入": "Already added. Don't add it again.",
+ "内核": "Core",
+ "节点": "Nodes",
+ "入站": "Inbound",
+ "出站": "Outbound",
+ "订阅": "subs",
+ "语言": "Language",
+ "草稿": "Drafts",
+ "流量": "Traffic",
+ "没有待重载的修改": "Nothing waiting to reload",
+ "有修改，点开查看": "Changes waiting — open to review",
+ "自定义配置": "Custom config",
+ "展开": "Open",
+ "+ 添加节点「{name}」（端口 {port}）": "+ Add node “{name}” (port {port})",
+ "- 删除节点「{name}」": "- Delete node “{name}”",
+ "~ 重置密码「{name}」": "~ Reset password “{name}”",
+ "~ 重置 API 密钥": "~ Reset API secret",
+ "~ 更换订阅链接": "~ Change subscription link",
+ "+ 添加出站节点「{name}」": "+ Add outbound node “{name}”",
+ "- 删除出站节点「{name}」": "- Delete outbound node “{name}”",
+ "+ 导入订阅源「{name}」": "+ Import provider “{name}”",
+ "- 删除订阅源「{name}」": "- Delete provider “{name}”"
 }
+
+export const LANGS = ['zh', 'en', 'ru', 'fa']
+const DICTS = { en: EN, ru: localesRu.ui || {}, fa: localesFa.ui || {} }
+const HTML_LANG = { zh: 'zh-CN', en: 'en', ru: 'ru', fa: 'fa' }
 
 function detect() {
   let v = ''
   try {
     v = window.localStorage.getItem(KEY) || ''
   } catch {}
-  if (v !== 'en' && v !== 'zh') {
-    const m = document.cookie.match(/(?:^|;\s*)clashgate_lang=(en|zh)/)
-    v = m ? m[1] : 'zh'
+  if (!LANGS.includes(v)) {
+    const m = document.cookie.match(/(?:^|;\s*)clashgate_lang=(zh|en|ru|fa)/)
+    v = m ? m[1] : ''
+  }
+  if (!LANGS.includes(v)) {
+    const nav = (navigator.language || '').toLowerCase()
+    if (nav.startsWith('ru')) v = 'ru'
+    else if (nav.startsWith('fa')) v = 'fa'
+    else if (nav.startsWith('en')) v = 'en'
+    else v = 'zh'
   }
   return v
 }
@@ -291,19 +367,25 @@ function persist(v) {
     window.localStorage.setItem(KEY, v)
   } catch {}
   document.cookie = `${KEY}=${v}; path=/; max-age=31536000; SameSite=Lax`
-  document.documentElement.lang = v === 'en' ? 'en' : 'zh-CN'
+  document.documentElement.lang = HTML_LANG[v] || 'zh-CN'
+  document.documentElement.dir = v === 'fa' ? 'rtl' : 'ltr'
 }
 persist(lang.value)
 
 export function setLang(v) {
-  lang.value = v === 'en' ? 'en' : 'zh'
+  lang.value = LANGS.includes(v) ? v : 'zh'
   persist(lang.value)
+}
+
+export function langLabel(v) {
+  return { zh: '中文', en: 'English', ru: 'Русский', fa: 'فارسی' }[v] || v
 }
 
 // t('中文源文案', { name }) -> current language. Placeholders use {name}. Unknown keys fall back to the source text.
 export function t(key, params) {
   let s = key
-  if (lang.value === 'en' && Object.prototype.hasOwnProperty.call(EN, key)) s = EN[key]
+  const dict = DICTS[lang.value]
+  if (dict && Object.prototype.hasOwnProperty.call(dict, key)) s = dict[key]
   if (params) s = s.replace(/\{(\w+)\}/g, (m, k) => (params[k] === undefined ? m : params[k]))
   return s
 }
