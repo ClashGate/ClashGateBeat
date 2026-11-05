@@ -1262,11 +1262,11 @@ const routingGroups = computed(() => {
 
 async function createRoutingGroup() {
   const name = routingForm.name.trim()
-  if (!name) return
-  const res = await postAction('/routing/add', {
-    name,
-    yaml_raw: routingForm.yaml_raw,
-  }, 'routing-add')
+  if (!name) {
+    showToast(t('请填写分流组名称'), false)
+    return
+  }
+  const res = await postAction('/routing/add', { name }, 'routing-add')
   if (res && res.ok) {
     routingForm.name = ''
     routingForm.yaml_raw = ''
@@ -1276,12 +1276,16 @@ async function createRoutingGroup() {
 
 async function importRoutingGroup() {
   const name = routingForm.name.trim()
-  if (!name) return
-  const res = await postAction('/routing/import', {
-    name,
-    url: routingForm.url,
-    yaml_raw: routingForm.yaml_raw,
-  }, 'routing-import')
+  const url = routingForm.url.trim()
+  if (!name) {
+    showToast(t('请填写分流组名称'), false)
+    return
+  }
+  if (!url) {
+    showToast(t('请填写外部规则集 URL'), false)
+    return
+  }
+  const res = await postAction('/routing/import', { name, url }, 'routing-import')
   if (res && res.ok) {
     routingForm.name = ''
     routingForm.yaml_raw = ''
@@ -2791,19 +2795,20 @@ onUnmounted(() => {
           </section>
 
           <section class="cg-surface rounded-2xl p-5 sm:p-6 space-y-3" v-if="!(state.routing && state.routing.error && state.custom_config_mode)">
-            <h3 class="text-sm font-bold text-slate-900">{{ t('新建分流组') }} / {{ t('引入外部分流') }}</h3>
+            <h3 class="text-sm font-bold text-slate-900">{{ t('新建分流组') }} / {{ t('引入外部规则') }}</h3>
+            <p class="text-xs text-slate-500">{{ t('引入外部规则会新建一个分流组，并把该 URL 作为规则集挂上（不下载、不解析远程 YAML）。') }}</p>
             <label class="block text-xs font-medium text-slate-500">{{ t('分流组名称') }}
               <input v-model="routingForm.name" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
             </label>
-            <label class="block text-xs font-medium text-slate-500">{{ t('外部分流 URL（引入时填写）') }}
+            <label class="block text-xs font-medium text-slate-500">{{ t('外部规则集 URL（引入时填写）') }}
               <input v-model="routingForm.url" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono" placeholder="https://" />
             </label>
             <div class="flex items-center gap-2 flex-wrap">
-              <button type="button" class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-add'" @click="createRoutingGroup">
+              <button type="button" class="cg-btn-primary px-3.5 py-1.5 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-add' || !routingForm.name.trim()" @click="createRoutingGroup">
                 {{ busyKey === 'routing-add' ? t('创建中…') : t('新建分流组') }}
               </button>
-              <button type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800" :disabled="busyKey === 'routing-import' || !routingForm.url.trim()" @click="importRoutingGroup">
-                {{ busyKey === 'routing-import' ? t('引入中…') : t('引入外部分流') }}
+              <button type="button" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800" :disabled="busyKey === 'routing-import' || !routingForm.name.trim() || !routingForm.url.trim()" @click="importRoutingGroup">
+                {{ busyKey === 'routing-import' ? t('引入中…') : t('引入外部规则') }}
               </button>
             </div>
           </section>

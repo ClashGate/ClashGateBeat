@@ -610,43 +610,10 @@ class RoutingManager:
                 return cand
         return stem + "-" + secrets.token_hex(3) + ".yaml"
 
-    def add_group(self, name: str, yaml_raw: str = "", import_url: str = "") -> dict:
-        meta = self.load_meta()
-        name = self._validate_name(name)
-        if any(g.get("name") == name for g in meta["groups"]):
-            raise ValueError(f"分流组名称已存在：{name}")
-        if import_url:
-            yaml_raw = self.fetch_url(import_url)
-        if not (yaml_raw or "").strip():
-            # Minimal empty policy group
-            doc = {
-                "rule-providers": {},
-                "proxy-groups": [{
-                    "name": name,
-                    "type": "select",
-                    "include-all": True,
-                    "proxies": ["Node Select", "DIRECT"],
-                }],
-                "rules": [],
-            }
-        else:
-            doc = self.parse_group_doc(yaml_raw)
-            # Force primary group name
-            if doc["proxy-groups"]:
-                doc["proxy-groups"][0]["name"] = name
-            else:
-                doc["proxy-groups"] = [{
-                    "name": name,
-                    "type": "select",
-                    "include-all": True,
-                    "proxies": ["Node Select", "DIRECT"],
-                }]
-            # Rewrite rule targets that pointed at old name? Keep as-is except ensure MATCH not present
-            doc["rules"] = [r for r in doc["rules"] if not str(r).upper().startswith("MATCH,")]
+    def _insert_policy_group(self, meta: dict, name: str, doc: dict) -> dict:
         gid = self._unique_id(meta, name)
         filename = self._unique_file(meta, name)
         self.write_group_raw(filename, self.dump_group_doc(doc))
-        # Insert before Final
         groups = meta["groups"]
         final_idx = next((i for i, g in enumerate(groups) if g.get("role") == ROLE_FINAL), len(groups))
         entry = {
@@ -662,8 +629,92 @@ class RoutingManager:
         self.regenerate_frags(meta)
         return entry
 
+    def _unique_provider_name(self, meta: dict, base: str) -> str:
+        base = re.sub(r"[^A-Za-z0-9_.\-]+", "-", (base or "").strip()).strip("-")
+        if not base or not re.match(r"^[A-Za-z]", base):
+            base = _slugify(base or "rules")
+        existing = set()
+        for g in meta["groups"]:
+            try:
+                doc = self.parse_group_doc(self.read_group_raw(g["file"]))
+            except Exception:
+                continue
+            existing.update((doc.get("rule-providers") or {}).keys())
+        if base not in existing:
+            return base
+        for i in range(2, 1000):
+            cand = f"{base}-{i}"
+            if cand not in existing:
+                return cand
+        return base + "-" + secrets.token_hex(3)
+
+    def add_group(self, name: str, yaml_raw: str = "", import_url: str = "") -> dict:
+        meta = self.load_meta()
+        name = self._validate_name(name)
+        if any(g.get("name") == name for g in meta["groups"]):
+            raise ValueError(f"分流组名称已存在：{name}")
+        # import_url kept for API compat but ignored here; use import_group()
+        if not (yaml_raw or "").strip():
+            doc = {
+                "rule-providers": {},
+                "proxy-groups": [{
+                    "name": name,
+                    "type": "select",
+                    "include-all": True,
+                    "proxies": ["Node Select", "DIRECT"],
+                }],
+                "rules": [],
+            }
+        else:
+            doc = self.parse_group_doc(yaml_raw)
+            if doc["proxy-groups"]:
+                doc["proxy-groups"][0]["name"] = name
+            else:
+                doc["proxy-groups"] = [{
+                    "name": name,
+                    "type": "select",
+                    "include-all": True,
+                    "proxies": ["Node Select", "DIRECT"],
+                }]
+            doc["rules"] = [r for r in doc["rules"] if not str(r).upper().startswith("MATCH,")]
+        return self._insert_policy_group(meta, name, doc)
+
     def import_group(self, name: str, url: str = "", yaml_raw: str = "") -> dict:
-        return self.add_group(name=name, yaml_raw=yaml_raw, import_url=url)
+        """Beginner import: wrap an external rule-provider URL as a new routing group.
+
+        Does NOT download or parse remote YAML (typical rule lists are payload/classical
+        files, not full proxy-groups documents). Mirrors default China/AI groups.
+        """
+        del yaml_raw  # intentionally unused; no remote YAML / pasted YAML path
+        meta = self.load_meta()
+        name = self._validate_name(name)
+        url = (url or "").strip()
+        if not url:
+            raise ValueError("请填写外部规则集 URL")
+        if not re.match(r"^https?://", url):
+            raise ValueError("外部规则集 URL 必须以 http(s):// 开头")
+        if any(g.get("name") == name for g in meta["groups"]):
+            raise ValueError(f"分流组名称已存在：{name}")
+        pname = self._unique_provider_name(meta, name)
+        doc = {
+            "rule-providers": {
+                pname: {
+                    "type": "http",
+                    "behavior": "classical",
+                    "url": url,
+                    "path": f"./ruleset/{pname}.yaml",
+                    "interval": 86400,
+                }
+            },
+            "proxy-groups": [{
+                "name": name,
+                "type": "select",
+                "include-all": True,
+                "proxies": ["Node Select", "DIRECT"],
+            }],
+            "rules": [f"RULE-SET,{pname},{name}"],
+        }
+        return self._insert_policy_group(meta, name, doc)
 
     def delete_group(self, gid: str) -> str:
         meta = self.load_meta()

@@ -5021,11 +5021,14 @@ class Panel(BaseHTTPRequestHandler):
     def do_routing_import(self, s, form):
         name = (form.get("name") or "").strip()
         url = (form.get("url") or "").strip()
-        yaml_raw = form.get("yaml_raw", "")
+        if not name:
+            return self.respond_mutation(s, "请填写分流组名称", False)
+        if not url:
+            return self.respond_mutation(s, "请填写外部规则集 URL", False)
         with LOCK:
             try:
                 _ensure_pending_baseline()
-                entry = get_routing().import_group(name=name, url=url, yaml_raw=yaml_raw)
+                entry = get_routing().import_group(name=name, url=url)
                 record_pending_reload(
                     op="import-routing",
                     kind="routing",
