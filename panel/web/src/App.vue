@@ -3529,34 +3529,31 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <section class="cg-surface rounded-2xl p-5 space-y-3">
-            <div>
-              <h2 class="text-base font-bold text-slate-900 tracking-tight">{{ t('更新通道') }}</h2>
-              <p class="text-xs text-slate-500 mt-1 leading-relaxed max-w-2xl">
-                {{ t('测试版可能不稳定，请谨慎使用。') }}
-              </p>
+          <section class="cg-surface rounded-2xl p-5 sm:p-6">
+            <div class="flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <h2 class="text-base font-bold text-slate-900 tracking-tight">{{ t('更新通道') }}</h2>
+                <p class="text-xs mt-1 leading-relaxed" :class="state.update_channel === 'test' ? 'text-amber-700' : 'text-slate-500'">
+                  {{ state.update_channel === 'test' ? t('当前为测试通道') : t('当前为正式通道') }} · {{ t('测试版可能不稳定，请谨慎使用。') }}
+                </p>
+              </div>
+              <div class="flex shrink-0 rounded-lg border border-slate-200 p-0.5 bg-white">
+                <button
+                  type="button"
+                  class="px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer"
+                  :class="state.update_channel === 'stable' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'"
+                  :disabled="busyKey === '/action/settings'"
+                  @click="setUpdateChannel('stable')"
+                >{{ t('正式') }}</button>
+                <button
+                  type="button"
+                  class="px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer"
+                  :class="state.update_channel === 'test' ? 'bg-amber-500 text-white' : 'text-slate-600 hover:bg-slate-50'"
+                  :disabled="busyKey === '/action/settings'"
+                  @click="setUpdateChannel('test')"
+                >{{ t('测试') }}</button>
+              </div>
             </div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                type="button"
-                class="px-3.5 py-2 rounded-xl text-sm font-semibold border transition cursor-pointer"
-                :class="state.update_channel === 'stable'
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'"
-                :disabled="busyKey === '/action/settings'"
-                @click="setUpdateChannel('stable')"
-              >{{ t('正式') }}</button>
-              <button
-                type="button"
-                class="px-3.5 py-2 rounded-xl text-sm font-semibold border transition cursor-pointer"
-                :class="state.update_channel === 'test'
-                  ? 'bg-amber-500 text-white border-amber-500'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'"
-                :disabled="busyKey === '/action/settings'"
-                @click="setUpdateChannel('test')"
-              >{{ t('测试') }}</button>
-            </div>
-            <p class="text-xs font-semibold" :class="state.update_channel === 'test' ? 'text-amber-700' : 'text-slate-500'">{{ state.update_channel === 'test' ? t('当前为测试通道') : t('当前为正式通道') }}</p>
           </section>
 
           <section class="cg-surface rounded-2xl">
