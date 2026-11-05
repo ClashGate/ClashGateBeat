@@ -1291,7 +1291,7 @@ async function importRoutingGroup() {
 
 function confirmDeleteRouting(g) {
   if (!g || !g.deletable) return
-  showConfirm({
+  openConfirmDialog({ tone: 'rose', confirmText: t('删除'),
     title: t('分流组'),
     message: t('确定删除分流组「{name}」？', { name: g.name }),
     onConfirm: () => postAction('/routing/delete', { id: g.id }, `routing-del-${g.id}`),
@@ -1332,7 +1332,7 @@ async function addRoutingProvider(g) {
 }
 
 function deleteRoutingProvider(g, p) {
-  showConfirm({
+  openConfirmDialog({ tone: 'rose', confirmText: t('删除'),
     title: t('规则集'),
     message: t('确定删除规则集「{name}」？', { name: p.name }),
     onConfirm: () => postAction('/routing/provider/delete', { id: g.id, provider: p.name }, `routing-prov-del-${p.name}`),
