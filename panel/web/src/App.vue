@@ -1300,15 +1300,26 @@ function confirmDeleteRouting(g) {
 
 async function renameRouting(g) {
   if (!g) return
-  const name = window.prompt(t('新名称'), g.name)
-  if (name == null) return
-  const trimmed = String(name).trim()
-  if (!trimmed || trimmed === g.name) return
-  await postAction('/routing/rename', { id: g.id, name: trimmed }, `routing-rename-${g.id}`)
+  renameDialog.id = g.id
+  renameDialog.oldName = g.name
+  renameDialog.name = g.name
+  renameDialog.show = true
+  nextTick(() => { const el = document.getElementById('rename-input'); if (el) { el.focus(); el.select() } })
+}
+
+const renameDialog = reactive({ show: false, id: '', oldName: '', name: '' })
+function closeRenameDialog() { renameDialog.show = false }
+async function acceptRenameDialog() {
+  const trimmed = String(renameDialog.name || '').trim()
+  if (!trimmed) return
+  const id = renameDialog.id
+  renameDialog.show = false
+  if (trimmed === renameDialog.oldName) return
+  await postAction('/routing/rename', { id, name: trimmed }, `routing-rename-${id}`)
 }
 
 const routingProvOpen = ref('')
-const routingProvForm = reactive({ provider: '', url: '', behavior: 'classical', format: 'yaml' })
+const routingProvForm = reactive({ provider: '', url: '' })
 
 function toggleRoutingProviders(g) {
   routingProvOpen.value = routingProvOpen.value === g.id ? '' : g.id
@@ -1550,6 +1561,30 @@ onUnmounted(() => {
         <span class="break-all leading-snug">{{ toast.msg }}</span>
       </div>
     </transition>
+
+    <!-- In-Panel Rename Modal -->
+    <Transition name="cg-modal">
+      <div
+        v-if="renameDialog.show"
+        id="rename-modal"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/25 backdrop-blur-[2px]"
+        @click.self="closeRenameDialog"
+      >
+        <div class="cg-modal-panel w-full max-w-md bg-white rounded-2xl border border-slate-200/90 p-6 shadow-[0_20px_50px_-12px_rgba(15,23,42,0.18)] space-y-4">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-base font-bold text-slate-900 tracking-tight">{{ t('重命名') }}</h3>
+            <button type="button" @click="closeRenameDialog" class="text-slate-400 hover:text-slate-600 hover:bg-slate-100 text-sm w-7 h-7 flex items-center justify-center rounded-lg transition cursor-pointer">✕</button>
+          </div>
+          <label class="block text-xs font-medium text-slate-500">{{ t('新名称') }}
+            <input id="rename-input" v-model="renameDialog.name" @keydown.enter.prevent="acceptRenameDialog" @keydown.esc="closeRenameDialog" class="cg-input mt-1 w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
+          </label>
+          <div class="flex items-center justify-end gap-2.5 pt-2">
+            <button type="button" @click="closeRenameDialog" class="px-4 py-2 rounded-xl text-xs font-medium bg-slate-100 hover:bg-slate-200/80 text-slate-700 transition cursor-pointer">{{ t('取消') }}</button>
+            <button type="button" @click="acceptRenameDialog" :disabled="!String(renameDialog.name || '').trim()" class="cg-btn-primary px-4 py-2 rounded-xl text-xs font-semibold transition cursor-pointer">{{ t('确认') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- In-Panel Confirmation Modal -->
     <Transition name="cg-modal">
@@ -2742,26 +2777,13 @@ onUnmounted(() => {
                   <div v-if="!(g.rule_providers || []).length" class="text-xs text-slate-500">{{ t('暂无规则集') }}</div>
                   <div v-for="p in (g.rule_providers || [])" :key="p.name" class="flex items-center gap-2 text-xs">
                     <span class="font-semibold text-slate-800">{{ p.name }}</span>
-                    <span class="text-slate-400">{{ p.behavior }}</span>
                     <span class="text-slate-500 truncate flex-1 min-w-0">{{ p.url }}</span>
                     <button type="button" class="px-2 py-0.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200" @click="deleteRoutingProvider(g, p)">{{ t('删除') }}</button>
                   </div>
                   <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
                     <input v-model="routingProvForm.provider" :placeholder="t('规则集名称（英文）')" class="cg-input h-9 px-3 rounded-xl border border-slate-200 text-xs" />
                     <input v-model="routingProvForm.url" placeholder="https://" class="cg-input sm:col-span-2 h-9 px-3 rounded-xl border border-slate-200 text-xs font-mono" />
-                    <select v-model="routingProvForm.behavior" class="cg-input h-9 px-2 rounded-xl border border-slate-200 text-xs">
-                      <option value="classical">{{ t('混合规则') }}</option>
-                      <option value="domain">{{ t('域名列表') }}</option>
-                      <option value="ipcidr">{{ t('IP 段列表') }}</option>
-                    </select>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <select v-model="routingProvForm.format" class="cg-input h-9 px-2 rounded-xl border border-slate-200 text-xs">
-                      <option value="yaml">YAML</option>
-                      <option value="text">{{ t('文本 (每行一条)') }}</option>
-                      <option value="mrs">MRS</option>
-                    </select>
-                    <button type="button" class="cg-btn-primary px-3 py-1.5 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-prov-add'" @click="addRoutingProvider(g)">{{ t('添加规则集') }}</button>
+                    <button type="button" class="cg-btn-primary h-9 px-3 rounded-xl text-xs font-semibold" :disabled="busyKey === 'routing-prov-add'" @click="addRoutingProvider(g)">{{ t('添加规则集') }}</button>
                   </div>
                 </div>
               </div>

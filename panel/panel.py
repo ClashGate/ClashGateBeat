@@ -5083,8 +5083,8 @@ class Panel(BaseHTTPRequestHandler):
                 if add:
                     gname = get_routing().add_provider(
                         gid, pname, form.get("url") or "",
-                        (form.get("behavior") or "classical").strip(),
-                        (form.get("format") or "yaml").strip(),
+                        "classical",
+                        "yaml",
                     )
                     detail = f"+ 分流组「{gname}」添加规则集「{pname}」"
                 else:
